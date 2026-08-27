@@ -242,6 +242,27 @@ sentence tomorrow.
 8. **The air conditioner will appear in both plugins.** Overlap is the
    consequence of shipping this separately, which is what you asked for.
 
+## Built, and what happened
+
+Everything above is implemented and running on the bar. Two things went
+differently from the plan.
+
+**A defect the tests could not have caught.** Every capability check failed
+silently in the shell while all 35 model tests passed under node. An array
+stored in a QML `property var` and read back crosses a boundary between JS
+engine contexts: it keeps `length` and `indexOf`, and `Array.isArray` returns
+`false` for it. `_has()` used `Array.isArray` as its gate, so every list the
+panel read back was rejected — the air conditioner's row said `Off` instead of
+`Off · 22°C · 55%`, and the sensors said nothing at all. Node has real arrays,
+so no test written there could ever have shown it. The module now copies every
+incoming list into a genuine Array once, and the regression tests build
+array-like objects that are deliberately not Arrays.
+
+**The televison's controls render, and are still unverified.** Power, volume,
+mute, playback and track all appear, built from what the set publishes while
+off. Whether they *do* anything needs the set on, and that is your call to
+make, not mine.
+
 ## What I could not verify
 
 **The television's controls.** Everything here is designed from what it
