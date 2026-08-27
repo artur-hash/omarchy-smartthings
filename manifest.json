@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.artur-hash.smartthings",
+  "name": "SmartThings",
+  "version": "0.1.0",
+  "author": "artur-hash",
+  "license": "MIT",
+  "description": "Every device in a SmartThings account from the bar, grouped by room, each showing the controls it actually publishes.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "SmartThings",
+    "description": "Devices, grouped by room",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

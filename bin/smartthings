@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# SmartThings backend. Owns every HTTP call and the keyring token; prints JSON
+# on stdout and nothing else, so the QML never parses prose.
+#
+# The hardening here is not speculative. Each piece was earned by a defect or a
+# review finding on the sibling smartac plugin, and is noted where it applies.
+set -uo pipefail
+
+API="https://api.smartthings.com/v1"
+SECRET_SERVICE="smartthings"
+
+# Ceilings on anything the far end controls. A real payload is kilobytes and a
+# real account has a handful of devices, so these are generous by orders of
+# magnitude -- their job is to make the cost of a hostile or broken response
+# bounded, not to be tight. Nothing from the network reaches QML unclamped.
+MAX_RESPONSE_BYTES=1048576   # a whole HTTP response, enforced while it arrives
+MAX_STRING=128               # any single string forwarded to the panel
+MAX_LIST=64                  # entries in a supported-values list
+MAX_DEVICES=200              # rows in the device list
+
+die()  { printf '{"error":%s}\n' "$(jq -Rn --arg m "$1" '$m')" >&2; exit "${2:-1}"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1" 4; }
+need jq
+
+# Prelude shared by every filter that shapes a remote payload into the small
+# object QML consumes. Device labels, mode names and supported-value lists are
+# all attacker-controlled once the endpoint is not trusted, and none of them has
+# a legitimate reason to be long.
+JQ_CLAMP='
+  def clampstr($n): if type == "string" then .[0:$n] else . end;
+  def clampstr: clampstr($MAXSTR);
+  def clamplist: if type == "array" then [ .[0:$MAXLIST][] | clampstr ] else [] end;
+'
+jq_shape() { jq --argjson MAXSTR "$MAX_STRING" --argjson MAXLIST "$MAX_LIST" "$@"; }
+
+# ------------------------------------------------------------------- token --
+
+read_token() {
+  need secret-tool
+  local t
+  t=$(secret-tool lookup service "$SECRET_SERVICE" key token 2>/dev/null) || return 1
+  [[ -n $t ]] || return 1
+  printf '%s' "$t"
+}
+
+cmd_token() {
+  local action="${1:-}"
+  case "$action" in
+    set)
+      need secret-tool
+      # stdin only. As an argument the token would land in /proc/<pid>/cmdline,
+      # readable by every process on this session for the life of the call.
+      (( $# > 1 )) && die "the token is read from stdin, not from an argument" 2
+      local raw
+      raw=$(cat)
+      raw="${raw%$'\n'}"
+      [[ -n $raw ]] || die "no token on stdin" 2
+      # A pasted token routinely carries stray whitespace; anything else is not
+      # a token. Control characters in particular would break curl's -K config
+      # format, and curl echoes the offending line back on stderr.
+      [[ $raw =~ ^[A-Za-z0-9._~+/=-]+$ ]] \
+        || die "that does not look like a personal access token" 2
+      printf '%s' "$raw" | secret-tool store --label="SmartThings token" \
+        service "$SECRET_SERVICE" key token \
+        || die "could not write to the keyring" 5
+      printf '{"ok":true}\n'
+      ;;
+    clear)
+      need secret-tool
+      secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
+      printf '{"ok":true}\n'
+      ;;
+    status)
+      if read_token >/dev/null 2>&1; then printf '{"hasToken":true}\n'
+      else printf '{"hasToken":false}\n'; fi
+      ;;
+    *) die "usage: smartthings token set|clear|status" 2 ;;
+  esac
+}
+
+# --------------------------------------------------------------------- http --
+
+# $1 method, $2 path, $3 body, and optionally SOFT=1 in the environment to make
+# a 403 a normal empty answer rather than a failure -- see cmd_rooms.
+api() {
+  need curl
+  local method="$1" path="$2" body="${3:-}" token raw status out token_escaped curl_rc
+
+  token=$(read_token) || die "no token stored" 2
+  token_escaped="${token//\\/\\\\}"
+  token_escaped="${token_escaped//\"/\\\"}"
+
+  local args=(-sS -X "$method" -H "Accept: application/json" -m 15
+              --max-filesize "$MAX_RESPONSE_BYTES" -w $'\n%{http_code}')
+  [[ -n $body ]] && args+=(-H "Content-Type: application/json" -d "$body")
+
+  # The response is bounded while it is arriving, not after it has been read.
+  # head closes the pipe once it has taken its fill and curl dies of SIGPIPE, so
+  # an oversized or never-terminating stream costs this much and stops. It
+  # matters because omarchy-shell is one long-lived process shared by every
+  # widget and the QML side collects this helper's whole stdout: an unbounded
+  # response is a way for whatever answers on the socket to exhaust the bar.
+  #
+  # --max-filesize covers the honest case where a length is declared up front;
+  # head covers the dishonest one where it is not.
+  #
+  # curl's own stderr is silenced: a malformed -K record makes curl echo the
+  # offending config line back, and this process's stderr is not collected by
+  # the QML side -- it would flow into the shell's journal.
+  raw=$(
+    printf 'header = "Authorization: Bearer %s"\n' "$token_escaped" \
+      | curl -K - "${args[@]}" "$API$path" 2>/dev/null \
+      | head -c "$((MAX_RESPONSE_BYTES + 1))"
+    printf '\n%s' "${PIPESTATUS[1]}"
+  )
+  curl_rc="${raw##*$'\n'}"
+  raw="${raw%$'\n'*}"
+
+  # Size before exit status: enforcing the ceiling is what kills curl, so
+  # reading the status first would report every oversized response as a network
+  # failure and hide the exact thing being defended against.
+  (( $(printf '%s' "$raw" | wc -c) > MAX_RESPONSE_BYTES )) \
+    && die "the response exceeded $MAX_RESPONSE_BYTES bytes and was refused" 10
+  [[ $curl_rc == 0 ]] || die "network unreachable" 6
+
+  status="${raw##*$'\n'}"
+  out="${raw%$'\n'*}"
+
+  case "$status" in
+    2*)  printf '%s' "$out" ;;
+    401) secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
+         die "the token was rejected; enter a new one" 3 ;;
+    403) [[ ${SOFT:-0} == 1 ]] && return 11
+         die "the token lacks permission for $path" 12 ;;
+    429) die "rate limited by SmartThings" 7 ;;
+    *)   die "SmartThings returned HTTP $status" 8 ;;
+  esac
+}
+
+# ------------------------------------------------------------------ reading --
+
+# Structure only: no health, no status. It changes rarely, so the panel reads it
+# once per session rather than per tick.
+cmd_devices() {
+  api GET /devices | jq_shape "$JQ_CLAMP"'{
+    devices: [ .items[]?
+      | { id:     (.deviceId | clampstr),
+          label:  ((.label // .name // .deviceId) | clampstr),
+          roomId: ((.roomId // "") | clampstr),
+          caps:   ([ .components[]?.capabilities[]?.id ] | unique | clamplist) } ][0:'"$MAX_DEVICES"']
+  }'
+}
+
+# Room names live behind location scopes a device-only token does not have, and
+# that is an ordinary configuration, not a fault. A 403 answers with an empty
+# map and exit 0; the panel then shows one flat list and says nothing about it.
+cmd_rooms() {
+  local locations rooms loc
+  locations=$(SOFT=1 api GET /locations)
+  case $? in
+    0)  ;;
+    11) printf '{"rooms":{},"scoped":false}\n'; return 0 ;;
+    *)  return $? ;;
+  esac
+  loc=$(jq -r '.items[0].locationId // empty' <<<"$locations")
+  [[ -n $loc ]] && [[ $loc =~ ^[0-9a-fA-F-]{36}$ ]] \
+    || { printf '{"rooms":{},"scoped":false}\n'; return 0; }
+
+  rooms=$(SOFT=1 api GET "/locations/$loc/rooms")
+  case $? in
+    0)  ;;
+    11) printf '{"rooms":{},"scoped":false}\n'; return 0 ;;
+    *)  return $? ;;
+  esac
+  jq_shape "$JQ_CLAMP"'{
+    rooms: ([ .items[]? | { key: (.roomId | clampstr), value: (.name | clampstr) } ][0:'"$MAX_DEVICES"'] | from_entries),
+    scoped: true
+  }' <<<"$rooms"
+}
+
+# One device's state, shaped into the small object the panel consumes. Every
+# capability this plugin knows how to render has a line here; a device that
+# lacks one gets null and the panel renders nothing for it.
+shape_status() {
+  jq_shape --arg id "$1" --argjson online "$2" "$JQ_CLAMP"'
+    .components.main as $m | {
+      id: $id,
+      online: $online,
+
+      switch:     ($m.switch.switch.value // null | clampstr),
+      level:      ($m.switchLevel.level.value // null),
+
+      volume:     ($m.audioVolume.volume.value // null),
+      mute:       ($m.audioMute.mute.value // null | clampstr),
+      playback:   ($m.mediaPlayback.playbackStatus.value // null | clampstr),
+      input:      ($m.mediaInputSource.inputSource.value // null | clampstr),
+      channel:    ($m.tvChannel.tvChannel.value // null | clampstr),
+
+      mode:       ($m.airConditionerMode.airConditionerMode.value // null | clampstr),
+      fan:        ($m.airConditionerFanMode.fanMode.value // null | clampstr),
+      swing:      ($m.fanOscillationMode.fanOscillationMode.value // null | clampstr),
+      preset:     ($m["custom.airConditionerOptionalMode"].acOptionalMode.value // null | clampstr),
+      setpoint:   ($m.thermostatCoolingSetpoint.coolingSetpoint.value // null),
+
+      temperature: ($m.temperatureMeasurement.temperature.value // null),
+      unit:        ($m.temperatureMeasurement.temperature.unit // "C" | clampstr),
+      humidity:    ($m.relativeHumidityMeasurement.humidity.value // null),
+      illuminance: ($m.illuminanceMeasurement.illuminance.value // null),
+      presence:    ($m.presenceSensor.presence.value // null | clampstr),
+      battery:     ($m.battery.battery.value // null),
+
+      # The lists the device itself publishes. Controls are built from these
+      # rather than from a hardcoded set, so a device that offers different
+      # values shows different buttons with no code change -- and one that
+      # publishes nothing (a television while it is off publishes no input
+      # sources) shows no control at all rather than a dead one.
+      supported: {
+        mode:     ($m.airConditionerMode.supportedAcModes.value | clamplist),
+        fan:      ($m.airConditionerFanMode.supportedAcFanModes.value | clamplist),
+        swing:    ($m.fanOscillationMode.supportedFanOscillationModes.value | clamplist),
+        preset:   ($m["custom.airConditionerOptionalMode"].supportedAcOptionalMode.value | clamplist),
+        input:    ($m.mediaInputSource.supportedInputSources.value | clamplist),
+        playback: ($m.mediaPlayback.supportedPlaybackCommands.value | clamplist)
+      },
+
+      setpointMin: ($m["custom.thermostatSetpointControl"].minimumSetpoint.value // null),
+      setpointMax: ($m["custom.thermostatSetpointControl"].maximumSetpoint.value // null)
+    }'
+}
+
+# Statuses for the devices named on the command line, fetched one after another
+# inside this single process. The limit that bit during smartac's development
+# was a burst limit, so a fan-out of concurrent children is exactly the shape to
+# avoid; pacing here keeps a refresh from looking like an attack.
+#
+# --health adds a reachability call per device, and the panel asks for it only
+# where it changes what is shown.
+cmd_status() {
+  local devices=() health=0 id online body out=()
+  while (( $# )); do
+    case "$1" in
+      --device) [[ -n ${2:-} ]] || die "--device requires a value" 2; devices+=("$2"); shift 2 ;;
+      --health) health=1; shift ;;
+      --json)   shift ;;
+      *)        die "unknown argument: $1" 2 ;;
+    esac
+  done
+  (( ${#devices[@]} )) || die "usage: smartthings status --device <id> [--device <id>...]" 2
+
+  for id in "${devices[@]}"; do
+    online=null
+    if (( health )); then
+      local h
+      h=$(api GET "/devices/$id/health") || exit $?
+      online=$(jq -r 'if .state == "ONLINE" then "true" else "false" end' <<<"$h") \
+        || die "malformed health response" 8
+      [[ $online == true || $online == false ]] || die "unexpected online value" 8
+    fi
+    body=$(api GET "/devices/$id/status") || exit $?
+    out+=("$(shape_status "$id" "$online" <<<"$body")")
+  done
+
+  printf '%s\n' "$(jq -s '{statuses: .}' <<<"$(printf '%s\n' "${out[@]}")")"
+}
+
+# ------------------------------------------------------------------ writing --
+
+# One generic write. The panel builds its buttons from what each device
+# publishes, so it cannot offer a command the device did not advertise; the
+# backend's job is to send it and report honestly what came back.
+cmd_send() {
+  local device="" capability="" command="" args=()
+  while (( $# )); do
+    case "$1" in
+      --device)     [[ -n ${2:-} ]] || die "--device requires a value" 2; device="$2"; shift 2 ;;
+      --capability) [[ -n ${2:-} ]] || die "--capability requires a value" 2; capability="$2"; shift 2 ;;
+      --command)    [[ -n ${2:-} ]] || die "--command requires a value" 2; command="$2"; shift 2 ;;
+      --arg)        [[ -n ${2:-} ]] || die "--arg requires a value" 2; args+=("$2"); shift 2 ;;
+      --number)     [[ -n ${2:-} ]] || die "--number requires a value" 2
+                    [[ ${2} =~ ^-?[0-9]+([.][0-9]+)?$ ]] || die "--number must be numeric" 2
+                    args+=("#$2"); shift 2 ;;
+      *) die "unknown argument: $1" 2 ;;
+    esac
+  done
+  [[ -n $device && -n $capability && -n $command ]] \
+    || die "usage: smartthings send --device <id> --capability <c> --command <k> [--arg v]" 2
+
+  # A '#' prefix marks a value that must go on the wire as a number: the API
+  # rejects a quoted number for a setpoint, and rejects a bare number where it
+  # wants a string.
+  local args_json
+  args_json=$(printf '%s\n' "${args[@]+"${args[@]}"}" \
+    | jq -Rn '[inputs | select(length > 0) | if startswith("#") then (.[1:] | tonumber) else . end]')
+
+  local body verdict
+  body=$(jq -cn --arg c "$capability" --arg k "$command" --argjson a "$args_json" \
+    '{commands:[{component:"main", capability:$c, command:$k, arguments:$a}]}')
+
+  # A refused command is not an HTTP error: the API answers 200 and puts the
+  # verdict in results[].status. Printing ok without reading it would report a
+  # success the cloud never claimed. An absent results array is treated as
+  # success -- some deployments omit it, and inventing a failure is worse.
+  verdict=$(api POST "/devices/$device/commands" "$body" | jq -r '
+    if (.results | type) == "array" and (.results | length) > 0
+    then ([.results[].status] | map(select(. != "COMPLETED" and . != "ACCEPTED")) | .[0] // "COMPLETED")
+    else "COMPLETED" end' 2>/dev/null)
+  case "$verdict" in
+    COMPLETED|ACCEPTED|"") printf '{"ok":true}\n' ;;
+    *) die "SmartThings refused the command ($verdict)" 8 ;;
+  esac
+}
+
+# ------------------------------------------------------------------ doctor --
+
+cmd_doctor() {
+  local c t devices_json n rooms_json
+  printf 'SmartThings doctor\n\n'
+  for c in curl jq secret-tool; do
+    command -v "$c" >/dev/null 2>&1 \
+      && printf '  ok    %s\n' "$c" || printf '  FAIL  %s is missing\n' "$c"
+  done
+
+  if t=$(read_token); then
+    # A redacted prefix, enough to tell two tokens apart and not enough to use.
+    printf '  ok    token stored (%s...)\n' "${t:0:4}"
+  else
+    printf '  FAIL  no token stored\n'; return 1
+  fi
+
+  devices_json=$(cmd_devices) || return 1
+  n=$(jq -r '.devices | length' <<<"$devices_json") || die "failed to parse devices" 8
+  printf '  ok    reachable, %s device(s) visible\n' "$n"
+
+  rooms_json=$(cmd_rooms) || return 1
+  if [[ $(jq -r '.scoped' <<<"$rooms_json") == true ]]; then
+    printf '  ok    location scope present, %s room(s)\n' "$(jq -r '.rooms | length' <<<"$rooms_json")"
+  else
+    printf '  --    no location scope; devices will not be grouped by room\n'
+  fi
+
+  jq -r '.devices[] | "        \(.label)  [\(.caps | length) capabilities]"' <<<"$devices_json" \
+    | head -n "$MAX_DEVICES"
+  return 0
+}
+
+# --------------------------------------------------------------------- main --
+
+case "${1:-}" in
+  token)   shift; cmd_token "$@" ;;
+  devices) shift; cmd_devices "$@" ;;
+  rooms)   shift; cmd_rooms "$@" ;;
+  status)  shift; cmd_status "$@" ;;
+  send)    shift; cmd_send "$@" ;;
+  doctor)  shift; cmd_doctor "$@" ;;
+  *) die "usage: smartthings token|devices|rooms|status|send|doctor" 2 ;;
+esac
