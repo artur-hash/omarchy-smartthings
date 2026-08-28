@@ -26,6 +26,8 @@ Panel {
   property string busy: ""
   property string actionError: ""
   property string openDeviceId: ""      // "" means the list screen
+  property bool loggingIn: false
+  property bool copied: false
 
   readonly property bool hasToken: panel.host ? panel.host.hasToken : false
   readonly property string bin: host ? host.pluginDir + "bin/smartthings" : ""
@@ -219,6 +221,30 @@ Panel {
 
   // ---- token
 
+  // The login the user would otherwise type. It is their own CLI, doing exactly
+  // what the instructions say, and it blocks until the browser flow finishes --
+  // so its exit is the moment to look again. The timeout is for the abandoned
+  // case: a browser tab closed without approving leaves the CLI waiting forever.
+  Process {
+    id: login
+    command: ["timeout", "300", "smartthings", "locations", "--json"]
+    onExited: {
+      panel.loggingIn = false
+      if (panel.host) panel.host.refreshAll()
+    }
+  }
+
+  // Installing a global npm package is not something a bar widget should do on
+  // someone's machine: it writes outside this plugin, can need elevation, and
+  // fails in ways only a terminal can show. Copying the command is honest help;
+  // running it would be overreach.
+  Process {
+    id: copyCommand
+    command: ["wl-copy", "npm install -g @smartthings/cli"]
+    onExited: { panel.copied = true; copyReset.restart() }
+  }
+  Timer { id: copyReset; interval: 2500; onTriggered: panel.copied = false }
+
   KeyboardPanel {
     id: popup
     anchorItem: panel.anchorButton
@@ -328,15 +354,19 @@ Panel {
             color: Qt.darker(panel.foreground, 1.3)
             font.family: panel.fontFamily
             font.pixelSize: Style.font.bodySmall
+            // With a button right below, telling the user to type the command
+            // is worse than pointing at it. The command stays as the manual
+            // route, in parentheses, for anyone who prefers a terminal.
             text: panel.host && panel.host.cliInstalled
-              ? "The SmartThings CLI is installed but not logged in. Run:\n\n"
-                + "    smartthings locations\n\n"
-                + "and log in when the browser opens."
+              ? "The SmartThings CLI is installed but not logged in. Press Log in "
+                + "and approve in the browser that opens.\n\n"
+                + "(The same thing, by hand: smartthings locations)"
               : "This plugin reads the session the SmartThings CLI keeps, so there "
-                + "is nothing to paste and nothing that expires. Run:\n\n"
-                + "    npm install -g @smartthings/cli\n"
-                + "    smartthings locations\n\n"
-                + "and log in when the browser opens."
+                + "is nothing to paste and nothing that expires. Install it:\n\n"
+                + "    npm install -g @smartthings/cli\n\n"
+                + "then reopen this panel. If it is already installed, the shell "
+                + "cannot see it on its PATH — the terminal's PATH and the "
+                + "session's are not always the same."
           }
 
           Text {
@@ -350,11 +380,35 @@ Panel {
                 + "one 24 hours after it is created, so it is not offered here."
           }
 
-          Button {
-            text: "Check again"
-            foreground: panel.foreground
-            fontFamily: panel.fontFamily
-            onClicked: if (panel.host) panel.host.refreshAll()
+          Row {
+            spacing: Style.space(6)
+
+            Button {
+              visible: panel.host && panel.host.cliInstalled
+              text: panel.loggingIn ? "Waiting for the browser…" : "Log in"
+              enabled: !panel.loggingIn
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+              onClicked: {
+                panel.loggingIn = true
+                login.running = true
+              }
+            }
+
+            Button {
+              visible: panel.host && !panel.host.cliInstalled
+              text: panel.copied ? "Copied" : "Copy install command"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+              onClicked: copyCommand.running = true
+            }
+
+            Button {
+              text: "Check again"
+              foreground: panel.foreground
+              fontFamily: panel.fontFamily
+              onClicked: if (panel.host) panel.host.refreshAll()
+            }
           }
         }
 
