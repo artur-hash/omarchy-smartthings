@@ -402,7 +402,9 @@ test_credential_reports_what_is_missing() {
   with_token
   out=$("$BIN" credential)
   check "with a session: ready" "$(jq -r .ready <<<"$out")" "true"
-  # No smartthings on PATH inside the test sandbox, so it cannot renew.
+  # HOME as well as PATH: the binary is now looked for where version managers
+  # put it, so hiding it takes more than emptying PATH.
+  out=$(HOME="$TMP/nowhere" "$BIN" credential)
   check "but not renewable without the binary" "$(jq -r .renewable <<<"$out")" "false"
 
   # With the CLI present it can renew, which is the difference between a
@@ -436,6 +438,35 @@ test_no_session_is_its_own_exit_code
 test_the_cli_session_is_the_token_sent
 test_credential_reports_what_is_missing
 test_a_rejected_session_is_reported_not_deleted
+
+# The shell that runs this plugin takes its environment from the session, not
+# from the user's terminal rc, so a CLI installed through a version manager can
+# be present and invisible on PATH -- and the failure is silent and delayed: the
+# session works for a day and then stops renewing. The binary is therefore
+# looked for where these tools actually put it.
+test_the_cli_is_found_off_PATH() {
+  setup
+  with_token
+  mkdir -p "$TMP/home/.local/share/mise/shims"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/home/.local/share/mise/shims/smartthings"
+  chmod +x "$TMP/home/.local/share/mise/shims/smartthings"
+  out=$(HOME="$TMP/home" "$BIN" credential)
+  check "a version manager's shim counts as installed" "$(jq -r .cliInstalled <<<"$out")" "true"
+  check "and the session can renew" "$(jq -r .renewable <<<"$out")" "true"
+  teardown
+}
+
+test_no_cli_anywhere_is_reported() {
+  setup
+  with_token
+  out=$(HOME="$TMP/nowhere" "$BIN" credential)
+  check "with no binary at all: not installed" "$(jq -r .cliInstalled <<<"$out")" "false"
+  check "and the session cannot renew" "$(jq -r .renewable <<<"$out")" "false"
+  teardown
+}
+
+test_the_cli_is_found_off_PATH
+test_no_cli_anywhere_is_reported
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

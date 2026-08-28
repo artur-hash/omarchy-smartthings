@@ -366,8 +366,9 @@ Panel {
                 + "One command does the whole setup — it asks before installing "
                 + "anything:\n\n"
                 + "    ~/.config/omarchy/plugins/io.github.artur-hash.smartthings/scripts/setup.sh\n\n"
-                + "If the CLI is already installed, the shell cannot see it on its "
-                + "PATH: the terminal's PATH and the session's are not always the same."
+                + "The plugin looks for the CLI where npm, mise, nvm, volta and asdf "
+                + "put it, so PATH does not have to be right — but it does have to be "
+                + "installed somewhere."
           }
 
           Text {
@@ -426,8 +427,8 @@ Panel {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: "The CLI session cannot renew itself: \"smartthings\" is not on PATH. "
-                + "Install it globally with npm install -g @smartthings/cli."
+            text: "The CLI session cannot renew itself: the smartthings binary is "
+                + "gone. Reinstall it with npm install -g @smartthings/cli."
             color: Color.urgent
             font.family: panel.fontFamily
             font.pixelSize: Style.font.caption
