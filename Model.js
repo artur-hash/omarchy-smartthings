@@ -6,7 +6,16 @@ var MAX_INTERVAL_MS = 600000
 var HEAT_INDEX_MIN_C = 27
 
 function _num(v)  { return (typeof v === "number" && isFinite(v)) ? v : null }
-function _str(v)  { return (typeof v === "string" && v !== "") ? v : null }
+// Angle brackets never survive into anything the panel renders. QML Text
+// defaults to AutoText, which interprets markup inside the shell process every
+// widget shares, and several surfaces that receive these strings are shell
+// components this plugin cannot set textFormat on. The backend strips them too;
+// this is the second place, because a string that reaches QML with a tag in it
+// is a bug wherever it came from.
+function plain(v) {
+  return String(v === null || v === undefined ? "" : v).replace(/[<>]/g, "")
+}
+function _str(v)  { return (typeof v === "string" && v !== "") ? plain(v) : null }
 // An array that has crossed the QML property boundary is array-like but is not
 // an Array: it has length and indexOf, and Array.isArray returns false for it.
 // Guarding on Array.isArray therefore rejects every list the panel reads back
@@ -61,7 +70,7 @@ function parseDevices(text) {
     devices: d.devices.map(function (x) {
       return {
         id: String(x.id || ""),
-        label: String(x.label || x.id || ""),
+        label: plain(x.label || x.id || ""),
         roomId: String(x.roomId || ""),
         caps: _list(x.caps)
       }
@@ -528,6 +537,6 @@ if (typeof module !== "undefined" && module.exports) {
     onCount: onCount, barLabel: barLabel,
     clampSetpoint: clampSetpoint, setpointRange: setpointRange,
     heatIndex: heatIndex, feelsLike: feelsLike, nextInterval: nextInterval,
-    emptyStatus: emptyStatus, MAX_INTERVAL_MS: MAX_INTERVAL_MS
+    emptyStatus: emptyStatus, plain: plain, MAX_INTERVAL_MS: MAX_INTERVAL_MS
   }
 }

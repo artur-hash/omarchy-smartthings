@@ -137,7 +137,7 @@ Panel {
       if (exitCode !== 0) {
         var msg = ""
         try { msg = JSON.parse(String(actionErr.text || "")).error || "" } catch (e) {}
-        panel.actionError = msg !== "" ? msg : "Command failed."
+        panel.actionError = msg !== "" ? Model.plain(msg) : "Command failed."
         panel.pending = null
         if (panel.host) panel.host.refreshAll()
         return
@@ -212,8 +212,10 @@ Panel {
       return
     }
     panel.pending = null
-    panel.actionError = "The device did not apply " + want.label + " " + want.value
-      + ". It is still " + (got === "" ? "unchanged" : got)
+    // want.value and got both originate with the device; the message is a
+    // remote string wearing a sentence.
+    panel.actionError = "The device did not apply " + Model.plain(want.label) + " " + Model.plain(want.value)
+      + ". It is still " + (got === "" ? "unchanged" : Model.plain(got))
       + " — some devices ignore settings that do not apply to their current state."
   }
 
@@ -352,6 +354,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             // Never on the setup screen: with no token there is no stale data,
@@ -505,6 +508,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.right: parent.right
                 anchors.rightMargin: Style.space(12)
                 anchors.verticalCenter: parent.verticalCenter
@@ -635,6 +639,7 @@ Panel {
                                               : Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.3)
                     opacity: panel.busy !== "" ? 0.5 : 1.0
                     Text {
+                      textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: "⏻"
                       color: parent.parent.isOn ? Style.selectedStateColor(panel.foreground, Color.accent)
@@ -709,6 +714,7 @@ Panel {
                 required property var modelData
                 spacing: Style.space(10)
                 Text {
+                  textFormat: Text.PlainText
                   width: Style.space(96)
                   text: modelData.label
                   color: Qt.darker(panel.foreground, 1.6)
@@ -763,6 +769,7 @@ Panel {
                                   : Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.3)
                 opacity: waiting ? 0.5 : 1.0
                 Text {
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: modelData.kind === "power" ? "⏻"
                       : (modelData.key === "lock" ? "󰌾"
@@ -799,6 +806,7 @@ Panel {
                   onClicked: panel.stepBy(panel.openDeviceId, modelData, -1)
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.verticalCenter: parent.verticalCenter
                   text: panel.shownValue(modelData) === null
                     ? "—" : (panel.shownValue(modelData) + modelData.unit)
