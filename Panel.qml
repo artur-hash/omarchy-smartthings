@@ -363,7 +363,10 @@ Panel {
                 + "3. Grant the device scopes (list, read, execute) and the\n"
                 + "    location read scope — rooms need it, and without it the\n"
                 + "    devices are simply not grouped\n"
-                + "4. Paste it below"
+                + "4. Paste it below\n\n"
+                + "SmartThings expires a personal access token 24 hours after it\n"
+                + "is created, so this needs doing again tomorrow. When it lapses\n"
+                + "the panel returns to this screen."
           }
 
           TextField {

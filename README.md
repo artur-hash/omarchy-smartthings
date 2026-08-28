@@ -67,6 +67,16 @@ nothing about it.
 Paste the token into the panel. It is read from stdin, never passed as an
 argument, and stored in the login keyring under service `smartthings`.
 
+**A personal access token lasts 24 hours.** SmartThings expires one a day after
+it is created — tokens issued before 30 December 2024 could last up to fifty
+years, but new ones cannot. So this is a daily chore, and it is a property of
+the credential rather than of this plugin. When the token lapses the panel says
+it was rejected and returns to the setup screen.
+
+The lasting fix is OAuth, where a refresh token buys a new access token without
+anyone retyping anything. It needs an API-only SmartApp registered in the
+SmartThings developer workspace; it is not here yet.
+
 ## What the backend trusts
 
 Nothing the network says, beyond its shape.
