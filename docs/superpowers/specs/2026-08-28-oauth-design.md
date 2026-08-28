@@ -179,3 +179,80 @@ technical one.
    not symmetric: one loses a day, the other loses the account.
 4. **Refresh is locked.** Two concurrent refreshes is the realistic way to lose
    a working setup, and this plugin has two independent readers by design.
+
+
+---
+
+# What testing found
+
+Written after five authorisation attempts against a real account. The design
+above is sound on paper; the platform did not cooperate, and the record of why
+is worth more than the design.
+
+## The two unverified facts, resolved
+
+**1. `POST /apps` accepts `http://localhost` — and that means nothing.**
+Registration returned 200 for a loopback redirect. The authorize endpoint then
+refused it with 403. Registration accepting a value is not the platform
+honouring it, which is exactly why the two were listed separately.
+
+**2. The 403 was the wrong host, not the loopback.** I concluded from it that
+SmartThings forbids loopback redirects entirely, said so as a fact, and
+designed a paste-the-code flow around it. That was wrong. The official CLI uses
+a different host and a loopback redirect on port 61973:
+
+| host | redirect | authorize |
+|---|---|---|
+| `api.smartthings.com/oauth/authorize` | `http://localhost` | **403** |
+| `oauthin-regional.api.smartthings.com/oauth/authorize` | `http://localhost` | **302** |
+
+The public documentation points at the first host. Taking its 403 as a verdict
+about the platform, rather than as a fact about one endpoint, cost three of the
+five attempts.
+
+## The app record, settled by reading the CLI
+
+Guessing app fields and having a human click after each guess is a bad loop.
+The official CLI's source ends it — `apps-user-input-create.js` builds exactly:
+
+```
+appType:        API_ONLY
+classifications: [CONNECTED_SERVICE]      // not AUTOMATION
+singleInstance:  true
+principalType:   LOCATION                 // not USER_LEVEL; and immutable
+oauth:           { clientName, scope, redirectUris }
+```
+
+Two of my guesses were wrong (`AUTOMATION`, then `USER_LEVEL`), and
+`principalType` cannot be changed after creation: the PUT answers 200 and
+ignores it. Read the reference implementation before the second guess, not
+after the fourth.
+
+## Where it actually stops
+
+The consent screen refuses this account, and the refusal is unaffected by the
+app record. Three configurations, including the canonical one, produced the
+same result on desktop and on mobile:
+
+- desktop: *"It looks like you have not set up a SmartThings account."*
+- mobile: *"É necessária pelo menos uma localização para activar a integração."*
+
+The account has two locations and five devices, and a personal access token
+reads and controls all of them. The mobile wording is the honest one and points
+at the consent step, not at the account.
+
+The deciding test was the official CLI's own login, which uses Samsung's own
+registered client on their own host: it wrote no credentials file. If the
+platform's own client cannot complete consent here, nothing registered from
+this side will.
+
+## Consequence
+
+OAuth is not reachable for this account, so both plugins stay on personal
+access tokens, which expire every 24 hours. That is a property of the
+credential and it is now stated plainly in both setup screens and READMEs
+rather than discovered by the user the next morning.
+
+What remains worth doing is reducing the friction of the daily paste — one
+entry point that stores the token for both plugins, rather than two panels
+opened in turn. It is worse than OAuth and it is what the platform allows.
