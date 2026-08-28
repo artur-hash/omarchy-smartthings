@@ -27,9 +27,12 @@ Item {
   property var devices: []
   property var rooms: ({})
   property bool roomsScoped: false
+  property int roomLocations: 0
   property var statuses: ({})
   property int consecutiveFailures: 0
   property bool hasToken: false
+  property string tokenSource: "none"   // "cli", "keyring" or "none"
+  readonly property bool lastingCredential: root.tokenSource === "cli"
 
   readonly property string label: Model.barLabel(root.devices, root.statuses)
   readonly property bool stale: root.consecutiveFailures > 0
@@ -89,8 +92,11 @@ Item {
     stdout: StdioCollector { id: tokenOut; waitForEnd: true }
     onExited: function (exitCode) {
       var had = root.hasToken
-      try { root.hasToken = JSON.parse(String(tokenOut.text)).hasToken === true }
-      catch (e) { root.hasToken = false }
+      try {
+        var st = JSON.parse(String(tokenOut.text))
+        root.hasToken = st.hasToken === true
+        root.tokenSource = String(st.source || "none")
+      } catch (e) { root.hasToken = false; root.tokenSource = "none" }
       if (!root.hasToken) {
         // A missing token is not a failed read. Left counting, the failures from
         // the moment the old token expired keep the bar dimmed and put "stale"
@@ -133,6 +139,7 @@ Item {
       var r = Model.parseRooms(roomOut.text)
       root.rooms = r.rooms
       root.roomsScoped = r.scoped
+      root.roomLocations = r.locations
       root.refreshStatuses()
     }
   }

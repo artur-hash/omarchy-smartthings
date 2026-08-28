@@ -46,9 +46,11 @@ test("parseDevices drops a row with no id rather than rendering a ghost", () => 
   assert.strictEqual(r.devices[0].id, "a");
 });
 
-test("parseRooms carries the scoped flag through", () => {
-  assert.strictEqual(M.parseRooms('{"rooms":{},"scoped":false}').scoped, false);
-  assert.strictEqual(M.parseRooms('{"rooms":{"r1":"Sala"},"scoped":true}').rooms.r1, "Sala");
+test("parseRooms carries the scope and the location count through", () => {
+  assert.strictEqual(M.parseRooms('{"rooms":{},"locations":0,"scoped":false}').scoped, false);
+  const r = M.parseRooms('{"rooms":{"r1":{"name":"Sala","location":"Casa"}},"locations":2,"scoped":true}');
+  assert.strictEqual(r.rooms.r1.name, "Sala");
+  assert.strictEqual(r.locations, 2);
 });
 
 test("parseStatuses keys by device and normalises absent values", () => {
@@ -68,22 +70,46 @@ test("parseStatuses keeps online tri-state, because unknown is not offline", () 
 
 // ----------------------------------------------------------------- grouping --
 
+const R1 = { name: "Living room", location: "Home" };
+const R2 = { name: "Bedroom", location: "Home" };
+
 test("groupByRoom sorts rooms by name and devices within them", () => {
-  const g = M.groupByRoom([AC, TV, LIGHT], { r1: "Living room", r2: "Bedroom" }, true);
+  const g = M.groupByRoom([AC, TV, LIGHT], { r1: R1, r2: R2 }, true, 1);
   assert.deepStrictEqual(g.map(x => x.room), ["Bedroom", "Living room"]);
   assert.deepStrictEqual(g[1].devices.map(d => d.label), ["light sensor", "living room tv"]);
 });
 
-test("devices with no room sink to the bottom under a blank heading", () => {
-  const g = M.groupByRoom([PHONE, TV], { r1: "Living room" }, true);
+// One account can hold a home and an office, and both can have a room by the
+// same name. The location leads so the two are told apart.
+test("the location leads the heading when there is more than one", () => {
+  const g = M.groupByRoom([TV], { r1: R1 }, true, 2);
+  assert.strictEqual(g[0].room, "Home · Living room");
+});
+
+test("and stays out of the way when there is only one", () => {
+  const g = M.groupByRoom([TV], { r1: R1 }, true, 1);
   assert.strictEqual(g[0].room, "Living room");
-  assert.strictEqual(g[1].room, "");
+});
+
+// An unnamed group under a named one reads as part of it -- the devices look
+// like they are in the room above, which is how an air conditioner in another
+// building appeared to be in the living room.
+test("ungrouped devices get their own heading once anything is named", () => {
+  const g = M.groupByRoom([PHONE, TV], { r1: R1 }, true, 1);
+  assert.strictEqual(g[0].room, "Living room");
+  assert.strictEqual(g[1].room, "NO ROOM");
+});
+
+test("but not when nothing is named, because there is nothing to belong to", () => {
+  const g = M.groupByRoom([PHONE, TV], {}, false, 0);
+  assert.strictEqual(g.length, 1);
+  assert.strictEqual(g[0].room, "");
 });
 
 // Without location scope every device is unplaced, and the degraded result is
 // the same shape as the grouped one -- so the panel needs no second code path.
 test("with no location scope everything lands in one unnamed group", () => {
-  const g = M.groupByRoom([TV, AC, PHONE], {}, false);
+  const g = M.groupByRoom([TV, AC, PHONE], {}, false, 0);
   assert.strictEqual(g.length, 1);
   assert.strictEqual(g[0].room, "");
   assert.strictEqual(g[0].devices.length, 3);
@@ -182,7 +208,7 @@ test("a summary survives the crossing too", () => {
 
 test("a device list that crossed the boundary still groups and counts", () => {
   const crossed = qmlArray([TV, AC]);
-  assert.strictEqual(M.groupByRoom(crossed, {}, false)[0].devices.length, 2);
+  assert.strictEqual(M.groupByRoom(crossed, {}, false, 0)[0].devices.length, 2);
   assert.strictEqual(M.devicesNeedingStatus(crossed).length, 2);
   assert.strictEqual(M.onCount(crossed, { "tv-1": statusFor({ switch: "on" }) }), 1);
 });

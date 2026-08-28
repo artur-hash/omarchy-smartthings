@@ -61,8 +61,8 @@ function parseDevices(text) {
 function parseRooms(text) {
   var d = _json(text)
   if (!d || typeof d.rooms !== "object" || d.rooms === null)
-    return { ok: false, rooms: {}, scoped: false }
-  return { ok: true, rooms: d.rooms, scoped: d.scoped === true }
+    return { ok: false, rooms: {}, locations: 0, scoped: false }
+  return { ok: true, rooms: d.rooms, locations: Number(d.locations) || 0, scoped: d.scoped === true }
 }
 
 function parseStatuses(text) {
@@ -95,16 +95,28 @@ function parseStatuses(text) {
 // under a heading of their own. With no location scope every device is unplaced
 // and the result is one flat group with no heading -- the degraded shape is the
 // same shape, so the panel needs no second code path.
-function groupByRoom(devices, rooms, scoped) {
+// A heading for one room. With more than one location in the account, the room
+// name alone is ambiguous -- two places can both have a "Sala de estar" -- so
+// the location leads.
+function roomHeading(entry, locationCount) {
+  if (!entry) return ""
+  var name = String(entry.name || "")
+  var loc = String(entry.location || "")
+  if (name === "") return loc
+  return (locationCount > 1 && loc !== "") ? loc + " · " + name : name
+}
+
+function groupByRoom(devices, rooms, scoped, locationCount) {
   var list = _arr(devices)
   var names = rooms || {}
+  var n = Number(locationCount) || 0
   var buckets = {}, order = []
 
   for (var i = 0; i < list.length; i++) {
     var d = list[i]
-    var name = (scoped && d.roomId && names[d.roomId]) ? String(names[d.roomId]) : ""
-    if (!buckets[name]) { buckets[name] = []; order.push(name) }
-    buckets[name].push(d)
+    var head = (scoped && d.roomId && names[d.roomId]) ? roomHeading(names[d.roomId], n) : ""
+    if (!buckets[head]) { buckets[head] = []; order.push(head) }
+    buckets[head].push(d)
   }
 
   order.sort(function (a, b) {
@@ -113,10 +125,16 @@ function groupByRoom(devices, rooms, scoped) {
     return a.localeCompare(b)
   })
 
-  return order.map(function (name) {
+  // An unnamed group sitting under a named one reads as part of it: the
+  // devices look like they are in the room above. It only stays unlabelled
+  // when nothing is labelled -- no location scope, so there are no rooms to
+  // belong to and a heading would be noise.
+  var anyNamed = order.some(function (x) { return x !== "" })
+
+  return order.map(function (head) {
     return {
-      room: name,
-      devices: buckets[name].slice().sort(function (a, b) { return a.label.localeCompare(b.label) })
+      room: (head === "" && anyNamed) ? "NO ROOM" : head,
+      devices: buckets[head].slice().sort(function (a, b) { return a.label.localeCompare(b.label) })
     }
   })
 }
@@ -318,7 +336,8 @@ function nextInterval(baseMs, consecutiveFailures) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseDevices: parseDevices, parseRooms: parseRooms, parseStatuses: parseStatuses,
-    groupByRoom: groupByRoom, controlsFor: controlsFor, readingsFor: readingsFor,
+    groupByRoom: groupByRoom, roomHeading: roomHeading,
+    controlsFor: controlsFor, readingsFor: readingsFor,
     summaryFor: summaryFor, devicesNeedingStatus: devicesNeedingStatus,
     onCount: onCount, barLabel: barLabel,
     clampSetpoint: clampSetpoint, setpointRange: setpointRange,

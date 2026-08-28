@@ -31,7 +31,8 @@ Panel {
   readonly property string bin: host ? host.pluginDir + "bin/smartthings" : ""
 
   readonly property var groups: panel.host
-    ? Model.groupByRoom(panel.host.devices, panel.host.rooms, panel.host.roomsScoped)
+    ? Model.groupByRoom(panel.host.devices, panel.host.rooms,
+                        panel.host.roomsScoped, panel.host.roomLocations)
     : []
 
   readonly property var openDevice: {
@@ -362,15 +363,35 @@ Panel {
             font.pixelSize: Style.font.bodySmall
             // Line breaks only between the steps. Wrapping inside one is the
             // Text's job, and hard-wrapping it here fights the panel's width.
-            text: "1.  Open account.smartthings.com/tokens\n"
-                + "2.  Generate a new token\n"
-                + "3.  Grant the device scopes — list, read, execute — and the location "
-                + "read scope. Rooms need that last one; without it the devices simply "
-                + "are not grouped.\n"
-                + "4.  Paste it below\n\n"
-                + "SmartThings expires a personal access token 24 hours after it is "
-                + "created, so this needs doing again tomorrow. When it lapses the "
-                + "panel returns to this screen."
+            //
+            // The CLI is listed first because it is the only credential that
+            // lasts, and because for some accounts it is the only one that
+            // works at all -- see the note below, which is not a footnote for
+            // the curious but the explanation a whole class of user needs.
+            text: "The lasting way — the SmartThings CLI holds a session that "
+                + "renews itself, so you do this once:\n\n"
+                + "    npm install -g @smartthings/cli\n"
+                + "    smartthings locations\n\n"
+                + "Log in when the browser opens. This panel picks the session up "
+                + "on its own.\n\n"
+                + "The quick way — paste a personal access token from "
+                + "account.smartthings.com/tokens, granting the device scopes "
+                + "(list, read, execute) and the location read scope. SmartThings "
+                + "expires it 24 hours after it is created, so it has to be done "
+                + "again tomorrow."
+          }
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            color: Qt.darker(panel.foreground, 1.7)
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.caption
+            text: "If your home was set up by someone else and shared with you, the "
+                + "CLI is the only route: authorising an app requires installing it "
+                + "into a location you own, and a shared member owns none. Your "
+                + "devices still read and control normally."
           }
 
           TextField {
@@ -396,6 +417,20 @@ Panel {
           visible: panel.hasToken && panel.openDeviceId === ""
           width: parent.width
           spacing: Style.space(10)
+
+          // Said once, quietly, on the screen the user actually lives on. A
+          // pasted token works perfectly until tomorrow morning, and finding
+          // that out then is worse than reading it now.
+          Text {
+            visible: panel.host && panel.host.tokenSource === "keyring"
+            width: parent.width
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: "This token expires 24 hours after you created it."
+            color: Qt.darker(panel.foreground, 1.6)
+            font.family: panel.fontFamily
+            font.pixelSize: Style.font.caption
+          }
 
           Text {
             visible: panel.host && panel.host.devices.length === 0

@@ -34,13 +34,89 @@ JQ_CLAMP='
 jq_shape() { jq --argjson MAXSTR "$MAX_STRING" --argjson MAXLIST "$MAX_LIST" "$@"; }
 
 # ------------------------------------------------------------------- token --
+#
+# Two sources, and which one is in use matters enough that the rest of the file
+# asks. A personal access token is what anyone can make in a minute, and
+# SmartThings expires it 24 hours later. The SmartThings CLI holds an OAuth
+# token that renews itself, which is the only credential here that lasts.
+#
+# The CLI is not merely the nicer option: it is the only one available to a
+# whole class of user. Authorising a third-party app requires installing it
+# into a location you own, so anyone whose home was set up by someone else and
+# shared with them cannot complete that flow at all -- the consent screen tells
+# them "at least one location is required" while their devices sit right there,
+# readable and controllable. Their PAT works; app authorisation never will. The
+# CLI sidesteps it because its own client installs with no location.
+
+# read_token prints two lines -- source, then token -- rather than setting a
+# global. A global would be written inside the subshell that $( ) creates and
+# never reach the caller, which is exactly how doctor came to report a CLI
+# session as a pasted token, and how the 401 branch would have cleared the
+# keyring over a credential the CLI owns.
+TOKEN_SOURCE=""
+
+cli_credentials_file() {
+  local f
+  for f in "${XDG_DATA_HOME:-$HOME/.local/share}/@smartthings/cli/credentials.json" \
+           "${XDG_CONFIG_HOME:-$HOME/.config}/@smartthings/cli/credentials.json"; do
+    [[ -r $f ]] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+
+# The CLI refreshes an hour before expiry, so any command it runs inside that
+# window renews the token. Rather than rotate the pair ourselves -- writing
+# another tool's credential file, and owning the failure mode where a spent
+# refresh token is never replaced -- we let it do its own job and simply ask.
+cli_refresh() {
+  command -v smartthings >/dev/null 2>&1 || return 1
+  smartthings locations --json >/dev/null 2>&1
+}
+
+cli_token() {
+  local f entry exp token
+  f=$(cli_credentials_file) || return 1
+  entry=$(jq -c 'to_entries | map(select(.value.accessToken | type == "string")) | .[0] // empty' "$f" 2>/dev/null)
+  [[ -n $entry ]] || return 1
+
+  # Half an hour of margin: inside the CLI's own refresh window, so asking it
+  # actually renews rather than handing back the same nearly-dead token.
+  exp=$(jq -r '.value.expires // empty' <<<"$entry")
+  if [[ -n $exp ]]; then
+    local exp_s now_s
+    exp_s=$(date -d "$exp" +%s 2>/dev/null) || exp_s=0
+    now_s=$(date +%s)
+    if (( exp_s > 0 && exp_s - now_s < 1800 )); then
+      cli_refresh
+      entry=$(jq -c 'to_entries | map(select(.value.accessToken | type == "string")) | .[0] // empty' "$f" 2>/dev/null)
+      [[ -n $entry ]] || return 1
+    fi
+  fi
+
+  token=$(jq -r '.value.accessToken' <<<"$entry")
+  [[ -n $token && $token != null ]] || return 1
+  printf '%s' "$token"
+}
 
 read_token() {
-  need secret-tool
   local t
+  if t=$(cli_token); then printf 'cli\n%s' "$t"; return 0; fi
+  need secret-tool
   t=$(secret-tool lookup service "$SECRET_SERVICE" key token 2>/dev/null) || return 1
   [[ -n $t ]] || return 1
-  printf '%s' "$t"
+  printf 'keyring\n%s' "$t"
+}
+
+# Fills TOKEN_SOURCE and TOKEN_VALUE. It returns nothing on stdout on purpose:
+# a caller writing `t=$(resolve_token)` would run it in a subshell and lose the
+# source again, which is the same mistake twice. Call it bare -- `resolve_token
+# || die ...` -- and read the two variables.
+TOKEN_VALUE=""
+resolve_token() {
+  local creds
+  creds=$(read_token) || return 1
+  TOKEN_SOURCE="${creds%%$'\n'*}"
+  TOKEN_VALUE="${creds#*$'\n'}"
 }
 
 cmd_token() {
@@ -66,13 +142,20 @@ cmd_token() {
       printf '{"ok":true}\n'
       ;;
     clear)
+      # Only ever the keyring's own copy. The CLI's credential belongs to the
+      # CLI, and deleting it from here would log the user out of a tool they
+      # did not ask this plugin to touch.
       need secret-tool
       secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
       printf '{"ok":true}\n'
       ;;
     status)
-      if read_token >/dev/null 2>&1; then printf '{"hasToken":true}\n'
-      else printf '{"hasToken":false}\n'; fi
+      if resolve_token; then
+        printf '{"hasToken":true,"source":"%s","lasting":%s}\n' \
+          "$TOKEN_SOURCE" "$([[ $TOKEN_SOURCE == cli ]] && echo true || echo false)"
+      else
+        printf '{"hasToken":false,"source":"none","lasting":false}\n'
+      fi
       ;;
     *) die "usage: smartthings token set|clear|status" 2 ;;
   esac
@@ -86,7 +169,8 @@ api() {
   need curl
   local method="$1" path="$2" body="${3:-}" token raw status out token_escaped curl_rc
 
-  token=$(read_token) || die "no token stored" 2
+  resolve_token || die "no credential: log in with the SmartThings CLI, or store a token" 2
+  token="$TOKEN_VALUE"
   token_escaped="${token//\\/\\\\}"
   token_escaped="${token_escaped//\"/\\\"}"
 
@@ -128,7 +212,17 @@ api() {
 
   case "$status" in
     2*)  printf '%s' "$out" ;;
-    401) secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
+    401) if [[ $TOKEN_SOURCE == cli ]]; then
+           # The CLI owns this credential; clearing the keyring would delete an
+           # unrelated one. One refresh, one retry, then give up rather than
+           # loop against a dead authorisation.
+           if [[ ${ST_RETRIED:-0} == 0 ]] && cli_refresh; then
+             ST_RETRIED=1 api "$method" "$path" "$body"
+             return $?
+           fi
+           die "the SmartThings CLI session was rejected; run: smartthings locations" 3
+         fi
+         secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
          die "the token was rejected — SmartThings expires one 24 hours after it is created; generate another" 3 ;;
     403) [[ ${SOFT:-0} == 1 ]] && return 11
          die "the token lacks permission for $path" 12 ;;
@@ -155,27 +249,30 @@ cmd_devices() {
 # that is an ordinary configuration, not a fault. A 403 answers with an empty
 # map and exit 0; the panel then shows one flat list and says nothing about it.
 cmd_rooms() {
-  local locations rooms loc
+  local locations rooms loc name out=() n=0
   locations=$(SOFT=1 api GET /locations)
   case $? in
     0)  ;;
-    11) printf '{"rooms":{},"scoped":false}\n'; return 0 ;;
+    11) printf '{"rooms":{},"locations":0,"scoped":false}\n'; return 0 ;;
     *)  return $? ;;
   esac
-  loc=$(jq -r '.items[0].locationId // empty' <<<"$locations")
-  [[ -n $loc ]] && [[ $loc =~ ^[0-9a-fA-F-]{36}$ ]] \
-    || { printf '{"rooms":{},"scoped":false}\n'; return 0; }
 
-  rooms=$(SOFT=1 api GET "/locations/$loc/rooms")
-  case $? in
-    0)  ;;
-    11) printf '{"rooms":{},"scoped":false}\n'; return 0 ;;
-    *)  return $? ;;
-  esac
-  jq_shape "$JQ_CLAMP"'{
-    rooms: ([ .items[]? | { key: (.roomId | clampstr), value: (.name | clampstr) } ][0:'"$MAX_DEVICES"'] | from_entries),
-    scoped: true
-  }' <<<"$rooms"
+  # Every location, not just the first. An account with a home and an office --
+  # or a home shared from someone else's account -- keeps devices in both, and
+  # reading .items[0] alone leaves half of them permanently ungrouped.
+  while IFS=$'\t' read -r loc name; do
+    [[ $loc =~ ^[0-9a-fA-F-]{36}$ ]] || continue
+    rooms=$(SOFT=1 api GET "/locations/$loc/rooms") || continue
+    n=$((n + 1))
+    out+=("$(jq_shape --arg ln "$name" "$JQ_CLAMP"'
+      [ .items[]? | { key: (.roomId | clampstr),
+                      value: { name: (.name | clampstr), location: ($ln | clampstr) } } ]
+      | from_entries' <<<"$rooms")")
+  done < <(jq -r '.items[]? | "\(.locationId)\t\(.name // "")"' <<<"$locations")
+
+  (( n )) || { printf '{"rooms":{},"locations":0,"scoped":false}\n'; return 0; }
+  jq -s --argjson n "$n" '{rooms: add, locations: $n, scoped: true}' \
+    <<<"$(printf '%s\n' "${out[@]}")"
 }
 
 # One device's state, shaped into the small object the panel consumes. Every
@@ -320,11 +417,28 @@ cmd_doctor() {
       && printf '  ok    %s\n' "$c" || printf '  FAIL  %s is missing\n' "$c"
   done
 
-  if t=$(read_token); then
+  if resolve_token && t="$TOKEN_VALUE"; then
     # A redacted prefix, enough to tell two tokens apart and not enough to use.
-    printf '  ok    token stored (%s...)\n' "${t:0:4}"
+    if [[ $TOKEN_SOURCE == cli ]]; then
+      if command -v smartthings >/dev/null 2>&1; then
+        printf '  ok    SmartThings CLI session (%s...) — renews itself\n' "${t:0:4}"
+      else
+        # The stored token is real but nothing can renew it: the CLI refreshes
+        # only when one of its own commands runs, and there is no smartthings on
+        # PATH to run. This would otherwise look healthy for a day and then
+        # fail like a plain PAT, with no hint why.
+        printf '  --    CLI session found (%s...) but "smartthings" is not on PATH\n' "${t:0:4}"
+        printf '        it cannot renew and will expire; install it globally:\n'
+        printf '        npm install -g @smartthings/cli\n'
+      fi
+    else
+      printf '  ok    personal access token (%s...) — expires 24h after it was created\n' "${t:0:4}"
+      command -v smartthings >/dev/null 2>&1 \
+        && printf '  --    the CLI is installed but not logged in: run "smartthings locations"\n' \
+        || printf '  --    for a credential that lasts, install the SmartThings CLI and log in\n'
+    fi
   else
-    printf '  FAIL  no token stored\n'; return 1
+    printf '  FAIL  no credential: log in with the SmartThings CLI, or paste a token\n'; return 1
   fi
 
   devices_json=$(cmd_devices) || return 1

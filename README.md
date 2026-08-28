@@ -52,30 +52,60 @@ Then add the widget to the bar from the shell's own widget settings.
 
 ## Setup
 
-The panel is its own setup screen. Create a token at
-[account.smartthings.com/tokens](https://account.smartthings.com/tokens) and
-grant it:
+Two ways to give the plugin a credential. It prefers the first.
 
-- the **device** scopes — list, read, execute
-- the **location read** scope — room names live behind it
+### The SmartThings CLI — the one that lasts
 
-Without the location scope everything still works; the devices are simply not
-grouped, because a token that cannot read locations cannot learn what a room is
-called. That is an ordinary configuration, not an error, and the panel says
-nothing about it.
+```bash
+npm install -g @smartthings/cli
+smartthings locations
+```
 
-Paste the token into the panel. It is read from stdin, never passed as an
-argument, and stored in the login keyring under service `smartthings`.
+Log in when the browser opens. The CLI holds an OAuth session that renews
+itself, and this plugin reads it — the same arrangement as tools that rely on
+`gcloud auth` or `gh auth login`. Nothing to paste, and nothing expires.
 
-**A personal access token lasts 24 hours.** SmartThings expires one a day after
-it is created — tokens issued before 30 December 2024 could last up to fifty
-years, but new ones cannot. So this is a daily chore, and it is a property of
-the credential rather than of this plugin. When the token lapses the panel says
-it was rejected and returns to the setup screen.
+Install it **globally**, not through `npx`: the plugin only reads the stored
+session, and the CLI only renews it when one of its own commands runs. Without
+`smartthings` on `PATH` the session works for a day and then dies like a pasted
+token. `smartthings doctor` says so if that happens.
 
-The lasting fix is OAuth, where a refresh token buys a new access token without
-anyone retyping anything. It needs an API-only SmartApp registered in the
-SmartThings developer workspace; it is not here yet.
+### A personal access token — quick, and gone tomorrow
+
+Create one at
+[account.smartthings.com/tokens](https://account.smartthings.com/tokens) with
+the device scopes (list, read, execute) and the location read scope, and paste
+it into the panel. It is read from stdin, never passed as an argument, and
+stored in the login keyring under service `smartthings`.
+
+**SmartThings expires it 24 hours after it is created.** Tokens issued before
+30 December 2024 could last fifty years; new ones cannot. So this is a daily
+chore, and it is a property of the credential rather than of this plugin.
+
+### If your home was shared with you
+
+The obvious third option — have the plugin register its own OAuth app — does
+not work for everyone, and the way it fails is worth knowing before you spend
+an evening on it.
+
+Authorising a third-party app means installing it **into a location you own**.
+If someone else set up the home and shared it with you, you own none, and the
+consent screen refuses: *"at least one location is required"* on mobile, and
+the considerably less helpful *"it looks like you have not set up a SmartThings
+account"* on desktop. Your devices are right there and read and control
+perfectly; only app authorisation is closed to you.
+
+The CLI route sidesteps this entirely, because its own client installs with no
+location at all. For a shared member it is not the better option — it is the
+only one that lasts.
+
+### Rooms
+
+Room names live behind the location read scope. Without it everything still
+works and the devices are simply not grouped. With it, devices are grouped
+under their room, and when the account holds more than one location the
+location leads the heading — `Casa · hashLabs` — because two places can each
+have a room by the same name.
 
 ## What the backend trusts
 

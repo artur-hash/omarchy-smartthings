@@ -10,6 +10,10 @@ PASS=0; FAIL=0
 setup() {
   TMP=$(mktemp -d)
   export SECRET_STORE="$TMP/secret"
+  # A real CLI session on the developer's machine would otherwise be picked up
+  # ahead of the keyring and quietly change what half these tests exercise.
+  export XDG_DATA_HOME="$TMP/share"
+  export XDG_CONFIG_HOME="$TMP/config"
   export PATH="$TMP/bin:$PATH"
   mkdir -p "$TMP/bin"
   # Mirrors real libsecret: reads all of stdin, then strips exactly one trailing
@@ -93,11 +97,11 @@ test_token_rejects_control_characters() {
 
 test_token_status_and_clear() {
   setup
-  check "no token reports hasToken false" "$("$BIN" token status)" '{"hasToken":false}'
+  check "no token reports hasToken false" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
   with_token
-  check "a stored token reports hasToken true" "$("$BIN" token status)" '{"hasToken":true}'
+  check "a stored token reports hasToken true" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "true"
   "$BIN" token clear >/dev/null
-  check "clearing removes it" "$("$BIN" token status)" '{"hasToken":false}'
+  check "clearing removes it" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
   teardown
 }
 
@@ -165,7 +169,7 @@ test_401_clears_the_token() {
   fake_curl 401 "$TMP/e.json"
   out=$("$BIN" devices 2>&1); rc=$?
   check "a rejected token exits 3" "$rc" "3"
-  check "and is removed from the keyring" "$("$BIN" token status)" '{"hasToken":false}'
+  check "and is removed from the keyring" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
   teardown
 }
 
@@ -200,7 +204,7 @@ test_missing_location_scope_degrades_quietly() {
 test_location_scope_returns_room_names() {
   setup
   with_token
-  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555"}]}' > "$TMP/loc.json"
+  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555","name":"Casa"}]}' > "$TMP/loc.json"
   printf '{"items":[{"roomId":"r1","name":"Sala"},{"roomId":"r2","name":"Quarto"}]}' > "$TMP/rooms.json"
   fake_curl_router '
     case "$url" in
@@ -210,7 +214,9 @@ test_location_scope_returns_room_names() {
   out=$("$BIN" rooms 2>&1); rc=$?
   check "a scoped token exits 0" "$rc" "0"
   check "and reports itself scoped" "$(jq -r '.scoped' <<<"$out")" "true"
-  check "with the room named" "$(jq -r '.rooms.r1' <<<"$out")" "Sala"
+  check "with the room named" "$(jq -r '.rooms.r1.name' <<<"$out")" "Sala"
+  check "and its location alongside it" "$(jq -r '.rooms.r1.location' <<<"$out")" "Casa"
+  check "and the locations counted" "$(jq -r '.locations' <<<"$out")" "1"
   teardown
 }
 
@@ -353,6 +359,104 @@ test_no_token_is_its_own_exit_code() {
   teardown
 }
 
+# Two credential sources. The CLI's OAuth session renews itself and is the only
+# one that lasts; a personal access token is what anyone can make in a minute
+# and dies 24 hours later. Which one is in use changes what the panel says and
+# what a 401 is allowed to delete, so the source travels with the token.
+fake_cli_credentials() {
+  local expires="$1" token="${2:-cli-token-xyz}"
+  export XDG_DATA_HOME="$TMP/share"
+  mkdir -p "$XDG_DATA_HOME/@smartthings/cli"
+  jq -n --arg e "$expires" --arg t "$token" \
+    '{"default:api.smartthings.com": {accessToken: $t, refreshToken: "r", expires: $e}}' \
+    > "$XDG_DATA_HOME/@smartthings/cli/credentials.json"
+}
+
+test_cli_session_is_preferred_over_a_pasted_token() {
+  setup
+  with_token
+  fake_cli_credentials "2099-01-01T00:00:00.000Z"
+  out=$("$BIN" token status)
+  check "the CLI session wins" "$(jq -r .source <<<"$out")" "cli"
+  check "and is reported as lasting" "$(jq -r .lasting <<<"$out")" "true"
+  teardown
+}
+
+test_a_pasted_token_is_used_when_there_is_no_cli_session() {
+  setup
+  with_token
+  export XDG_DATA_HOME="$TMP/empty"
+  out=$("$BIN" token status)
+  check "the keyring is the fallback" "$(jq -r .source <<<"$out")" "keyring"
+  check "and is not lasting" "$(jq -r .lasting <<<"$out")" "false"
+  teardown
+}
+
+# The source has to survive the call. Written as a global set inside $( ), it is
+# assigned in a subshell and never reaches the caller -- which reported a CLI
+# session as a pasted token, and would have let a 401 delete a keyring entry
+# over a credential the CLI owns.
+test_the_credential_source_survives_the_call() {
+  setup
+  with_token
+  fake_cli_credentials "2099-01-01T00:00:00.000Z"
+  printf '{"items":[]}' > "$TMP/e.json"
+  fake_curl 200 "$TMP/e.json"
+  "$BIN" devices >/dev/null 2>&1
+  grep -q 'cli-token-xyz' "$TMP/curl.stdin" && ok "the CLI token is the one actually sent" \
+    || bad "the CLI token is the one actually sent" "$(cat "$TMP/curl.stdin")"
+  teardown
+}
+
+# A 401 on the CLI's credential must not delete the keyring's, which belongs to
+# a different mechanism the user may still be relying on.
+test_a_rejected_cli_session_leaves_the_keyring_alone() {
+  setup
+  with_token
+  fake_cli_credentials "2099-01-01T00:00:00.000Z"
+  printf '{}' > "$TMP/e.json"
+  fake_curl 401 "$TMP/e.json"
+  "$BIN" devices >/dev/null 2>&1
+  export XDG_DATA_HOME="$TMP/empty"
+  check "the pasted token is still there" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "true"
+  teardown
+}
+
+test_a_rejected_pasted_token_is_cleared() {
+  setup
+  with_token
+  export XDG_DATA_HOME="$TMP/empty"
+  printf '{}' > "$TMP/e.json"
+  fake_curl 401 "$TMP/e.json"
+  out=$("$BIN" devices 2>&1); rc=$?
+  check "a rejected pasted token exits 3" "$rc" "3"
+  check "and is removed" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
+  teardown
+}
+
+# Reading only .items[0] left every device in every other location permanently
+# ungrouped -- an air conditioner in a second location looked like it belonged
+# to the first location's room, because the unnamed group renders under it.
+test_every_location_is_walked() {
+  setup
+  with_token
+  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555","name":"Casa"},{"locationId":"22222222-3333-4444-5555-666666666666","name":"Escritorio"}]}' > "$TMP/loc.json"
+  printf '{"items":[{"roomId":"rA","name":"Sala"}]}' > "$TMP/r1.json"
+  printf '{"items":[{"roomId":"rB","name":"Diretoria"}]}' > "$TMP/r2.json"
+  fake_curl_router '
+    case "$url" in
+      *"11111111"*"/rooms"*) route "'"$TMP"'/r1.json" 200 ;;
+      *"22222222"*"/rooms"*) route "'"$TMP"'/r2.json" 200 ;;
+      *"/locations"*)        route "'"$TMP"'/loc.json" 200 ;;
+    esac'
+  out=$("$BIN" rooms 2>&1)
+  check "both locations counted" "$(jq -r '.locations' <<<"$out")" "2"
+  check "the first location's room" "$(jq -r '.rooms.rA.name' <<<"$out")" "Sala"
+  check "and the second's" "$(jq -r '.rooms.rB.name' <<<"$out")" "Diretoria"
+  check "each labelled with its own location" "$(jq -r '.rooms.rB.location' <<<"$out")" "Escritorio"
+  teardown
+}
+
 test_token_comes_from_stdin_only
 test_token_rejects_control_characters
 test_token_status_and_clear
@@ -364,6 +468,7 @@ test_401_clears_the_token
 test_429_is_named_as_rate_limiting
 test_missing_location_scope_degrades_quietly
 test_location_scope_returns_room_names
+test_every_location_is_walked
 test_status_shapes_one_device
 test_several_devices_are_fetched_in_one_process
 test_health_is_opt_in
@@ -373,6 +478,11 @@ test_send_distinguishes_numbers_from_strings
 test_a_refused_command_is_not_reported_as_success
 test_absent_results_array_is_still_success
 test_no_token_is_its_own_exit_code
+test_cli_session_is_preferred_over_a_pasted_token
+test_a_pasted_token_is_used_when_there_is_no_cli_session
+test_the_credential_source_survives_the_call
+test_a_rejected_cli_session_leaves_the_keyring_alone
+test_a_rejected_pasted_token_is_cleared
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
