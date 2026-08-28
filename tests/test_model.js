@@ -220,6 +220,141 @@ test("a supported list that crossed the boundary still builds its buttons", () =
   assert.deepStrictEqual(c.options, ["auto", "cool"]);
 });
 
+// ------------------------------------------------ the wider capability set --
+//
+// None of these are in the account this was built against. That is precisely
+// why they are tested: the registry has to work for hardware nobody here owns.
+
+const LOCK = { id: "lk", label: "front door", roomId: "r1", caps: ["lock", "battery"] };
+const SHADE = { id: "sh", label: "blind", roomId: "r1",
+                caps: ["windowShade", "windowShadeLevel"] };
+const BULB = { id: "bl", label: "lamp", roomId: "r1",
+               caps: ["switch", "switchLevel", "colorTemperature", "colorControl"] };
+const STAT = { id: "th", label: "thermostat", roomId: "r1",
+               caps: ["thermostatMode", "thermostatHeatingSetpoint", "thermostatOperatingState"] };
+const SENSORS = { id: "sn", label: "hall", roomId: "r1",
+                  caps: ["contactSensor", "motionSensor", "waterSensor", "powerMeter"] };
+
+// A lock reports "locked" for the command "lock", a door "closed" for "close".
+// Deriving the expected value from the verb is wrong as often as it is right,
+// so the registry states it.
+test("a lock offers the command that changes it and names what it will report", () => {
+  const c = M.controlsFor(LOCK, statusFor({ lock: "locked" })).find(x => x.key === "lock");
+  assert.strictEqual(c.command, "unlock");
+  assert.strictEqual(c.expect, "unlocked");
+  assert.strictEqual(c.value, true);
+});
+
+test("and the other way round when it is open", () => {
+  const c = M.controlsFor(LOCK, statusFor({ lock: "unlocked" })).find(x => x.key === "lock");
+  assert.strictEqual(c.command, "lock");
+  assert.strictEqual(c.expect, "locked");
+});
+
+// Two shapes exist in the API and neither is worth flattening into the other.
+test("a shade's published values are each their own command", () => {
+  const st = statusFor({ shade: "closed", supported: Object.assign(M.emptyStatus("x").supported,
+    { shade: ["open", "close", "pause"] }) });
+  const c = M.controlsFor(SHADE, st).find(x => x.key === "shade");
+  assert.strictEqual(c.optionIsCommand, true);
+  assert.deepStrictEqual(c.options, ["open", "close", "pause"]);
+});
+
+test("while a thermostat's are values for one setter", () => {
+  const st = statusFor({ thermostatMode: "heat", supported: Object.assign(M.emptyStatus("x").supported,
+    { thermostatMode: ["heat", "cool", "off"] }) });
+  const c = M.controlsFor(STAT, st).find(x => x.key === "thermostatMode");
+  assert.strictEqual(c.optionIsCommand, false);
+  assert.strictEqual(c.command, "setThermostatMode");
+});
+
+// Colour temperature reads its range from the lamp, for the same reason the
+// setpoint does: a constant that fits one bulb is wrong on the next.
+test("colour temperature takes its range from the device", () => {
+  const c = M.controlsFor(BULB, statusFor({ colorTempMin: 2700, colorTempMax: 5000 }))
+    .find(x => x.key === "colorTemp");
+  assert.strictEqual(c.min, 2700);
+  assert.strictEqual(c.max, 5000);
+  assert.strictEqual(c.step, 100, "stepping kelvin one at a time is unusable");
+});
+
+test("and falls back only when the device publishes none", () => {
+  const c = M.controlsFor(BULB, statusFor({})).find(x => x.key === "colorTemp");
+  assert.ok(c.min < c.max);
+});
+
+test("a bulb earns level, white and colour from its capabilities alone", () => {
+  const keys = M.controlsFor(BULB, statusFor({})).map(x => x.key);
+  ["switch", "level", "colorTemp", "hue", "saturation"].forEach(k =>
+    assert.ok(keys.indexOf(k) !== -1, "missing " + k));
+});
+
+test("sensors earn readings and no controls at all", () => {
+  const st = statusFor({ contact: "open", motion: "active", water: "dry", power: 42 });
+  assert.deepStrictEqual(M.controlsFor(SENSORS, st), []);
+  const r = M.readingsFor(SENSORS, st).map(x => x.label + "=" + x.text);
+  assert.ok(r.indexOf("CONTACT=Open") !== -1);
+  assert.ok(r.indexOf("MOTION=Motion") !== -1);
+  assert.ok(r.indexOf("WATER=Dry") !== -1);
+  assert.ok(r.indexOf("POWER=42 W") !== -1);
+});
+
+// What a glance down the list is actually asking.
+test("a summary answers the questions a list is scanned for", () => {
+  assert.strictEqual(
+    M.summaryFor(LOCK, statusFor({ lock: "locked", battery: 12 })),
+    "Locked · 12% battery");
+  assert.strictEqual(
+    M.summaryFor(SENSORS, statusFor({ contact: "open", motion: "active", water: "wet" })),
+    "Open · Motion · Wet");
+});
+
+test("a healthy battery is not worth a word", () => {
+  assert.strictEqual(M.summaryFor(LOCK, statusFor({ lock: "locked", battery: 95 })), "Locked");
+});
+
+// ------------------------------------------------------------- locations --
+
+const ROOMS = { r1: { name: "hashLabs", location: "Casa" },
+                r2: { name: "Diretoria", location: "Dotnova" } };
+
+test("locations are counted, with what is on in each", () => {
+  const devs = [{ id: "a", label: "a", roomId: "r1", caps: ["switch"] },
+                { id: "b", label: "b", roomId: "r1", caps: ["switch"] },
+                { id: "c", label: "c", roomId: "r2", caps: ["switch"] }];
+  const st = { a: statusFor({ switch: "on" }), b: statusFor({ switch: "off" }),
+               c: statusFor({ switch: "off" }) };
+  const locs = M.locationsOf(devs, ROOMS, true, st);
+  assert.deepStrictEqual(locs.map(l => l.title), ["Casa", "Dotnova"]);
+  assert.strictEqual(locs[0].total, 2);
+  assert.strictEqual(locs[0].on, 1);
+});
+
+test("devices with no location sort last under a heading of their own", () => {
+  const devs = [{ id: "a", label: "a", roomId: "r1", caps: [] },
+                { id: "z", label: "z", roomId: "", caps: [] }];
+  const locs = M.locationsOf(devs, ROOMS, true, {});
+  assert.strictEqual(locs[1].title, "ELSEWHERE");
+  assert.strictEqual(locs[1].location, "");
+});
+
+test("entering a location shows only its devices", () => {
+  const devs = [{ id: "a", label: "a", roomId: "r1", caps: [] },
+                { id: "c", label: "c", roomId: "r2", caps: [] }];
+  assert.deepStrictEqual(
+    M.devicesInLocation(devs, ROOMS, true, "Dotnova").map(d => d.id), ["c"]);
+});
+
+// With no location scope every device is unplaced, so there is one location and
+// the panel skips the screen entirely rather than showing a menu of one.
+test("no location scope collapses to a single group", () => {
+  const devs = [{ id: "a", label: "a", roomId: "r1", caps: [] },
+                { id: "c", label: "c", roomId: "r2", caps: [] }];
+  const locs = M.locationsOf(devs, {}, false, {});
+  assert.strictEqual(locs.length, 1);
+  assert.strictEqual(locs[0].title, "");
+});
+
 // --------------------------------------------------------------- readings --
 
 test("readings come only from capabilities the device actually has", () => {

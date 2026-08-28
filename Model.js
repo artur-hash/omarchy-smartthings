@@ -29,8 +29,19 @@ function emptyStatus(id) {
     mode: null, fan: null, swing: null, preset: null, setpoint: null,
     temperature: null, unit: "C", humidity: null, illuminance: null,
     presence: null, battery: null,
-    supported: { mode: [], fan: [], swing: [], preset: [], input: [], playback: [] },
-    setpointMin: null, setpointMax: null
+
+    lock: null, door: null, garage: null, shade: null, shadeLevel: null,
+    valve: null, alarm: null, fanSpeed: null,
+    colorTemp: null, hue: null, saturation: null,
+    thermostatMode: null, thermostatFan: null, heatingSetpoint: null,
+    operatingState: null,
+    contact: null, motion: null, water: null, smoke: null, co: null,
+    sound: null, tamper: null, acceleration: null,
+    power: null, energy: null, airQuality: null,
+
+    supported: { mode: [], fan: [], swing: [], preset: [], input: [], playback: [],
+                 shade: [], thermostatMode: [], thermostatFan: [], alarm: [] },
+    setpointMin: null, setpointMax: null, colorTempMin: null, colorTempMax: null
   }
 }
 
@@ -75,13 +86,21 @@ function parseStatuses(text) {
     var out = emptyStatus(s.id)
     out.online = (s.online === true) ? true : (s.online === false ? false : null)
     var scalars = ["switch", "mute", "playback", "input", "channel",
-                   "mode", "fan", "swing", "preset", "presence", "unit"]
+                   "mode", "fan", "swing", "preset", "presence", "unit",
+                   "lock", "door", "garage", "shade", "valve", "alarm",
+                   "thermostatMode", "thermostatFan", "operatingState",
+                   "contact", "motion", "water", "smoke", "co",
+                   "sound", "tamper", "acceleration"]
     for (var j = 0; j < scalars.length; j++) out[scalars[j]] = _str(s[scalars[j]]) || out[scalars[j]]
     var numbers = ["level", "volume", "setpoint", "temperature", "humidity",
-                   "illuminance", "battery", "setpointMin", "setpointMax"]
+                   "illuminance", "battery", "setpointMin", "setpointMax",
+                   "shadeLevel", "fanSpeed", "colorTemp", "hue", "saturation",
+                   "heatingSetpoint", "power", "energy", "airQuality",
+                   "colorTempMin", "colorTempMax"]
     for (var k = 0; k < numbers.length; k++) out[numbers[k]] = _num(s[numbers[k]])
     if (s.supported && typeof s.supported === "object") {
-      var lists = ["mode", "fan", "swing", "preset", "input", "playback"]
+      var lists = ["mode", "fan", "swing", "preset", "input", "playback",
+                   "shade", "thermostatMode", "thermostatFan", "alarm"]
       for (var l = 0; l < lists.length; l++) out.supported[lists[l]] = _list(s.supported[lists[l]])
     }
     byId[s.id] = out
@@ -104,6 +123,47 @@ function roomHeading(entry, locationCount) {
   var loc = String(entry.location || "")
   if (name === "") return loc
   return (locationCount > 1 && loc !== "") ? loc + " · " + name : name
+}
+
+// The location a device sits in, or "" when nothing places it.
+function locationOf(device, rooms, scoped) {
+  if (!scoped || !device || !device.roomId) return ""
+  var e = (rooms || {})[device.roomId]
+  return e ? String(e.location || "") : ""
+}
+
+// One row per location, for the screen that comes before the devices. Opening
+// every location at once buries a house under an office; this makes the account
+// something you walk into rather than something you scroll past.
+function locationsOf(devices, rooms, scoped, byId) {
+  var list = _arr(devices)
+  var buckets = {}, order = []
+  for (var i = 0; i < list.length; i++) {
+    var loc = locationOf(list[i], rooms, scoped)
+    if (!buckets[loc]) { buckets[loc] = []; order.push(loc) }
+    buckets[loc].push(list[i])
+  }
+  order.sort(function (a, b) {
+    if (a === "") return 1
+    if (b === "") return -1
+    return a.localeCompare(b)
+  })
+  var anyNamed = order.some(function (x) { return x !== "" })
+  return order.map(function (loc) {
+    return {
+      location: loc,
+      title: (loc === "" && anyNamed) ? "ELSEWHERE" : loc,
+      devices: buckets[loc],
+      total: buckets[loc].length,
+      on: onCount(buckets[loc], byId)
+    }
+  })
+}
+
+function devicesInLocation(devices, rooms, scoped, location) {
+  return _arr(devices).filter(function (d) {
+    return locationOf(d, rooms, scoped) === location
+  })
 }
 
 function groupByRoom(devices, rooms, scoped, locationCount) {
@@ -151,12 +211,36 @@ function _has(caps, id) {
 }
 
 // Which of the values the device published are worth a row of buttons.
+// An empty command means the option *is* the command: windowShade publishes
+// open/close/pause and each is its own call, where airConditionerMode publishes
+// values passed to one setter. Both shapes exist in the API and neither is
+// worth flattening into the other.
 function _choice(kind, caps, capability, command, status, listKey, current) {
   if (!_has(caps, capability)) return null
   var options = _arr(status.supported ? status.supported[listKey] : null)
   if (options.length === 0) return null
-  return { kind: "choice", key: kind, label: kind.toUpperCase(), capability: capability,
-           command: command, options: options, value: current }
+  return { kind: "choice", key: kind, label: _label(kind), capability: capability,
+           command: command, optionIsCommand: command === "",
+           options: options, value: current }
+}
+
+function _label(kind) {
+  if (kind === "thermostatMode") return "THERMOSTAT"
+  if (kind === "thermostatFan") return "THERMOSTAT FAN"
+  return kind.toUpperCase()
+}
+
+// A pair of commands with a pair of reported values -- lock/unlock reports
+// locked/unlocked, open/close reports open/closed. The command to offer is the
+// one that changes things, and the value to expect back is what the device will
+// then report, which is rarely the same word.
+function _pair(caps, capability, key, label, st, onCmd, offCmd, onVal, offVal) {
+  if (!_has(caps, capability)) return null
+  var isOn = st[key] === onVal
+  return { kind: "toggle", key: key, label: label, capability: capability,
+           command: isOn ? offCmd : onCmd,
+           expect: isOn ? offVal : onVal,
+           value: isOn }
 }
 
 function controlsFor(device, status) {
@@ -188,6 +272,58 @@ function controlsFor(device, status) {
   out.push(_choice("preset", caps, "custom.airConditionerOptionalMode",
                                    "setAcOptionalMode",     st, "preset", st.preset))
   out.push(_choice("input",  caps, "mediaInputSource",      "setInputSource",         st, "input",  st.input))
+
+  // Locks, doors, shades, valves and sirens. None are in the account this was
+  // built against; that is no reason for the next one to go uncontrolled.
+  out.push(_pair(caps, "lock", "lock", "LOCK", st, "lock", "unlock", "locked", "unlocked"))
+  out.push(_pair(caps, "doorControl", "door", "DOOR", st, "open", "close", "open", "closed"))
+  out.push(_pair(caps, "garageDoorControl", "garage", "GARAGE", st, "open", "close", "open", "closed"))
+  out.push(_pair(caps, "valve", "valve", "VALVE", st, "open", "close", "open", "closed"))
+
+  out.push(_choice("shade", caps, "windowShade", "", st, "shade", st.shade))
+  out.push(_choice("alarm", caps, "alarm", "", st, "alarm", st.alarm))
+  out.push(_choice("thermostatMode", caps, "thermostatMode", "setThermostatMode",
+                   st, "thermostatMode", st.thermostatMode))
+  out.push(_choice("thermostatFan", caps, "thermostatFanMode", "setThermostatFanMode",
+                   st, "thermostatFan", st.thermostatFan))
+
+  if (_has(caps, "windowShadeLevel"))
+    out.push({ kind: "stepper", key: "shadeLevel", label: "SHADE LEVEL",
+               capability: "windowShadeLevel", command: "setShadeLevel",
+               value: st.shadeLevel, min: 0, max: 100, unit: "%", numeric: true })
+
+  if (_has(caps, "fanSpeed"))
+    out.push({ kind: "stepper", key: "fanSpeed", label: "FAN SPEED",
+               capability: "fanSpeed", command: "setFanSpeed",
+               value: st.fanSpeed, min: 0, max: 4, unit: "", numeric: true })
+
+  if (_has(caps, "thermostatHeatingSetpoint")) {
+    var hr = (st.unit === "F") ? [50, 90] : [10, 32]
+    out.push({ kind: "stepper", key: "heatingSetpoint", label: "HEAT TO",
+               capability: "thermostatHeatingSetpoint", command: "setHeatingSetpoint",
+               value: st.heatingSetpoint, min: hr[0], max: hr[1],
+               unit: "°" + (st.unit || "C"), numeric: true })
+  }
+
+  // Warmth of white, in kelvin, with the range the lamp publishes -- the same
+  // reason the setpoint reads its bounds rather than assuming them.
+  if (_has(caps, "colorTemperature")) {
+    var lo = _num(st.colorTempMin), hi = _num(st.colorTempMax)
+    out.push({ kind: "stepper", key: "colorTemp", label: "WHITE",
+               capability: "colorTemperature", command: "setColorTemperature",
+               value: st.colorTemp,
+               min: (lo !== null && hi !== null && lo < hi) ? Math.round(lo) : 2200,
+               max: (lo !== null && hi !== null && lo < hi) ? Math.round(hi) : 6500,
+               step: 100, unit: "K", numeric: true })
+  }
+
+  if (_has(caps, "colorControl")) {
+    out.push({ kind: "stepper", key: "hue", label: "HUE", capability: "colorControl",
+               command: "setHue", value: st.hue, min: 0, max: 100, unit: "", numeric: true })
+    out.push({ kind: "stepper", key: "saturation", label: "SATURATION",
+               capability: "colorControl", command: "setSaturation",
+               value: st.saturation, min: 0, max: 100, unit: "", numeric: true })
+  }
 
   if (_has(caps, "audioVolume"))
     out.push({ kind: "stepper", key: "volume", label: "VOLUME", capability: "audioVolume",
@@ -227,6 +363,28 @@ function readingsFor(device, status) {
 
   add("illuminanceMeasurement", "LIGHT", st.illuminance, " lux")
   add("battery", "BATTERY", st.battery, "%")
+  add("powerMeter", "POWER", st.power, " W")
+  add("energyMeter", "ENERGY", st.energy, " kWh")
+  add("airQualitySensor", "AIR QUALITY", st.airQuality, "")
+
+  // A sensor that only reports still earns a row: knowing a door is open is
+  // the whole point of having put one there. Each reads as the thing itself,
+  // not as the protocol's word for it.
+  function state(cap, label, value, onWord, on, off) {
+    if (_has(caps, cap) && value !== null && value !== undefined)
+      out.push({ label: label, text: value === onWord ? on : off })
+  }
+  state("contactSensor", "CONTACT", st.contact, "open", "Open", "Closed")
+  state("motionSensor", "MOTION", st.motion, "active", "Motion", "Still")
+  state("waterSensor", "WATER", st.water, "wet", "Wet", "Dry")
+  state("smokeDetector", "SMOKE", st.smoke, "detected", "Detected", "Clear")
+  state("carbonMonoxideDetector", "CO", st.co, "detected", "Detected", "Clear")
+  state("soundSensor", "SOUND", st.sound, "detected", "Detected", "Quiet")
+  state("tamperAlert", "TAMPER", st.tamper, "detected", "Tampered", "Clear")
+  state("accelerationSensor", "MOVEMENT", st.acceleration, "active", "Moving", "Still")
+
+  if (_has(caps, "thermostatOperatingState") && st.operatingState !== null)
+    out.push({ label: "RUNNING", text: String(st.operatingState) })
   if (_has(caps, "presenceSensor") && st.presence !== null)
     out.push({ label: "PRESENCE", text: st.presence === "present" ? "Home" : "Away" })
   if (_has(caps, "tvChannel") && st.channel !== null && st.channel !== "")
@@ -237,6 +395,8 @@ function readingsFor(device, status) {
 // One line for a list row: what this device is doing, in the fewest words that
 // are still true. A device with no status read yet says nothing rather than
 // guessing.
+function _cap(v) { var t = String(v || ""); return t.charAt(0).toUpperCase() + t.slice(1) }
+
 function summaryFor(device, status) {
   var caps = device ? _arr(device.caps) : []
   var st = status
@@ -253,15 +413,40 @@ function summaryFor(device, status) {
     bits.push(st.presence === "present" ? "Home" : "Away")
   if (st.switch === "on" && _has(caps, "audioVolume") && st.volume !== null)
     bits.push("vol " + st.volume)
+
+  // The states someone scanning the list is actually looking for. A locked
+  // door and a dry basement are the answers a glance is asking for.
+  if (_has(caps, "lock") && st.lock !== null) bits.push(st.lock === "locked" ? "Locked" : "Unlocked")
+  if (_has(caps, "contactSensor") && st.contact !== null) bits.push(st.contact === "open" ? "Open" : "Closed")
+  if (_has(caps, "doorControl") && st.door !== null) bits.push(st.door === "open" ? "Open" : "Closed")
+  if (_has(caps, "garageDoorControl") && st.garage !== null) bits.push(st.garage === "open" ? "Open" : "Closed")
+  if (_has(caps, "motionSensor") && st.motion === "active") bits.push("Motion")
+  if (_has(caps, "waterSensor") && st.water === "wet") bits.push("Wet")
+  if (_has(caps, "smokeDetector") && st.smoke === "detected") bits.push("Smoke")
+  if (_has(caps, "carbonMonoxideDetector") && st.co === "detected") bits.push("CO")
+  if (_has(caps, "windowShade") && st.shade !== null) bits.push(_cap(st.shade))
+  if (_has(caps, "powerMeter") && st.power !== null && st.power > 0) bits.push(Math.round(st.power) + " W")
+  if (_has(caps, "battery") && st.battery !== null && st.battery <= 20)
+    bits.push(st.battery + "% battery")
   return bits.join(" · ")
 }
 
 // Which devices the list screen needs a status for. Everything else costs a
 // request per tick to show nothing the row displays.
+// Which devices the list screen needs a status for: those whose row shows
+// something. Everything else would cost a request per tick to display nothing,
+// and there is no bulk status endpoint to spread that over.
+var SUMMARISED = ["switch", "temperatureMeasurement", "relativeHumidityMeasurement",
+                  "presenceSensor", "illuminanceMeasurement", "lock", "contactSensor",
+                  "doorControl", "garageDoorControl", "motionSensor", "waterSensor",
+                  "smokeDetector", "carbonMonoxideDetector", "windowShade",
+                  "powerMeter", "battery"]
+
 function devicesNeedingStatus(devices) {
   return _arr(devices).filter(function (d) {
-    return _has(d.caps, "switch") || _has(d.caps, "temperatureMeasurement")
-      || _has(d.caps, "presenceSensor") || _has(d.caps, "illuminanceMeasurement")
+    var caps = _arr(d.caps)
+    for (var i = 0; i < SUMMARISED.length; i++) if (_has(caps, SUMMARISED[i])) return true
+    return false
   })
 }
 
@@ -337,6 +522,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseDevices: parseDevices, parseRooms: parseRooms, parseStatuses: parseStatuses,
     groupByRoom: groupByRoom, roomHeading: roomHeading,
+    locationsOf: locationsOf, devicesInLocation: devicesInLocation, locationOf: locationOf,
     controlsFor: controlsFor, readingsFor: readingsFor,
     summaryFor: summaryFor, devicesNeedingStatus: devicesNeedingStatus,
     onCount: onCount, barLabel: barLabel,

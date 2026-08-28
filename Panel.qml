@@ -25,17 +25,38 @@ Panel {
 
   property string busy: ""
   property string actionError: ""
-  property string openDeviceId: ""      // "" means the list screen
+  property string openDeviceId: ""      // "" means a list screen
+  // "" means the locations screen. With a single location there is nothing to
+  // choose, so the panel opens straight into it -- a menu of one is a click
+  // that buys nothing.
+  property string openLocation: ""
+  property bool locationChosen: false
   property bool loggingIn: false
   property bool copied: false
 
   readonly property bool hasToken: panel.host ? panel.host.hasToken : false
   readonly property string bin: host ? host.pluginDir + "bin/smartthings" : ""
 
-  readonly property var groups: panel.host
-    ? Model.groupByRoom(panel.host.devices, panel.host.rooms,
-                        panel.host.roomsScoped, panel.host.roomLocations)
+  readonly property var locations: panel.host
+    ? Model.locationsOf(panel.host.devices, panel.host.rooms,
+                        panel.host.roomsScoped, panel.host.statuses)
     : []
+
+  readonly property bool singleLocation: panel.locations.length <= 1
+
+  // Which screen the list area is showing: the locations, or one location's
+  // devices. A single location skips the first entirely.
+  readonly property bool inLocation: panel.singleLocation || panel.locationChosen
+
+  readonly property var groups: {
+    if (!panel.host) return []
+    var devs = panel.singleLocation
+      ? panel.host.devices
+      : Model.devicesInLocation(panel.host.devices, panel.host.rooms,
+                                panel.host.roomsScoped, panel.openLocation)
+    return Model.groupByRoom(devs, panel.host.rooms, panel.host.roomsScoped,
+                             panel.host.roomLocations)
+  }
 
   readonly property var openDevice: {
     if (!panel.host || panel.openDeviceId === "") return null
@@ -76,7 +97,20 @@ Panel {
     panel.pending = null
     panel.dial = null
     panel.actionError = ""
+    // Reopening starts at the top. A panel that resumes three levels deep from
+    // yesterday makes the user reverse out of somewhere they did not choose.
+    panel.openDeviceId = ""
+    panel.locationChosen = false
+    panel.openLocation = ""
     if (panel.host) panel.host.refreshAll()
+  }
+
+  function back() {
+    panel.actionError = ""
+    panel.pending = null
+    if (panel.openDeviceId !== "") { panel.openDeviceId = ""; return }
+    panel.locationChosen = false
+    panel.openLocation = ""
   }
 
   // ---- writing
@@ -192,9 +226,12 @@ Panel {
   function stepBy(device, control, delta) {
     var base = (panel.dial && panel.dial.key === control.key) ? panel.dial.value
              : (control.value === null ? control.min : control.value)
+    // Colour temperature spans thousands of kelvin; stepping it one at a time
+    // would be a stepper nobody could reach the end of.
+    var step = control.step ? control.step : 1
     panel.actionError = ""
     panel.dial = { deviceId: device, key: control.key,
-                   value: Model.clampSetpoint(base + delta, control.min, control.max),
+                   value: Model.clampSetpoint(base + delta * step, control.min, control.max),
                    control: control }
     dialSend.restart()
   }
@@ -287,18 +324,23 @@ Panel {
             spacing: Style.space(8)
             PanelActionButton {
               id: backButton
+              // Nothing to go back to from the first screen, and with a single
+              // location the device list is the first screen.
               visible: panel.openDeviceId !== ""
+                       || (panel.locationChosen && !panel.singleLocation)
               anchors.verticalCenter: parent.verticalCenter
               iconText: "󰅁"
-              tooltipText: "All devices"
+              tooltipText: panel.openDeviceId !== "" ? "Back to devices" : "All locations"
               foreground: panel.foreground
               fontFamily: panel.fontFamily
-              onClicked: { panel.openDeviceId = ""; panel.pending = null; panel.actionError = "" }
+              onClicked: panel.back()
             }
             Text {
               id: titleText
               anchors.verticalCenter: parent.verticalCenter
-              text: panel.openDevice ? panel.openDevice.label : "SmartThings"
+              text: panel.openDevice ? panel.openDevice.label
+                   : (panel.locationChosen && !panel.singleLocation ? panel.openLocation
+                                                                    : "SmartThings")
               textFormat: Text.PlainText
               color: panel.foreground
               font.family: panel.fontFamily
@@ -414,9 +456,79 @@ Panel {
           }
         }
 
-        // ================================================== 2. device list
+        // ============================================ 2a. locations
+        //
+        // Every location open at once buries a house under an office. This is a
+        // place you walk into; it is skipped entirely when there is only one.
         Column {
-          visible: panel.hasToken && panel.openDeviceId === ""
+          visible: panel.hasToken && panel.openDeviceId === "" && !panel.inLocation
+          width: parent.width
+          spacing: Style.space(6)
+
+          Repeater {
+            model: panel.locations
+            Rectangle {
+              required property var modelData
+              width: column.width
+              height: locCol.implicitHeight + Style.space(20)
+              radius: Style.cornerRadius + 2
+              color: Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.04)
+              border.width: Style.spacing.hairline
+              border.color: Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.12)
+
+              Column {
+                id: locCol
+                x: Style.space(12); y: Style.space(10)
+                width: parent.width - Style.space(40)
+                spacing: Style.space(2)
+                Text {
+                  width: parent.width
+                  text: modelData.title
+                  textFormat: Text.PlainText
+                  color: panel.foreground
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  elide: Text.ElideRight
+                }
+                Text {
+                  width: parent.width
+                  // What a glance is asking: is anything running in there.
+                  text: modelData.on > 0
+                    ? modelData.total + " devices · " + modelData.on + " on"
+                    : modelData.total + " devices"
+                  textFormat: Text.PlainText
+                  color: Qt.darker(panel.foreground, 1.5)
+                  font.family: panel.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              Text {
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
+                text: "󰅂"
+                color: Qt.darker(panel.foreground, 1.4)
+                font.family: panel.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  panel.openLocation = parent.modelData.location
+                  panel.locationChosen = true
+                  panel.actionError = ""
+                }
+              }
+            }
+          }
+        }
+
+        // ================================================== 2b. device list
+        Column {
+          visible: panel.hasToken && panel.openDeviceId === "" && panel.inLocation
           width: parent.width
           spacing: Style.space(10)
 
@@ -640,15 +752,20 @@ Panel {
                 visible: modelData.kind === "power" || modelData.kind === "toggle"
                 readonly property bool lit: modelData.kind === "power"
                   ? modelData.value === "on" : modelData.value === true
+                readonly property bool waiting: panel.pending !== null
+                  && panel.pending.key === modelData.key
                 width: Style.space(30); height: Style.space(30)
                 radius: Style.cornerRadius
                 color: lit ? Style.selectedFillFor(panel.foreground, Color.accent) : "transparent"
                 border.width: Style.spacing.hairline
                 border.color: lit ? Style.selectedBorderFor(panel.foreground, Color.accent)
                                   : Qt.rgba(panel.foreground.r, panel.foreground.g, panel.foreground.b, 0.3)
+                opacity: waiting ? 0.5 : 1.0
                 Text {
                   anchors.centerIn: parent
-                  text: modelData.kind === "power" ? "⏻" : "󰝟"
+                  text: modelData.kind === "power" ? "⏻"
+                      : (modelData.key === "lock" ? "󰌾"
+                      : (modelData.key === "mute" ? "󰝟" : "󰔡"))
                   color: parent.lit ? Style.selectedStateColor(panel.foreground, Color.accent)
                                     : Qt.darker(panel.foreground, 1.3)
                   font.family: panel.fontFamily
@@ -659,10 +776,14 @@ Panel {
                   cursorShape: Qt.PointingHandCursor
                   onClicked: panel.send(
                     panel.openDeviceId, modelData.capability, modelData.command, undefined,
-                    modelData.kind === "power" ? "switch" : "mute",
-                    modelData.kind === "power" ? "power" : "mute", false,
-                    modelData.kind === "power" ? modelData.command
-                                               : (modelData.command === "mute" ? "muted" : "unmuted"))
+                    modelData.key, modelData.label.toLowerCase(), false,
+                    // A lock reports "locked" for the command "lock", a door
+                    // "closed" for "close". The registry states the expected
+                    // value because guessing it from the verb is wrong as often
+                    // as it is right.
+                    modelData.expect !== undefined ? modelData.expect
+                      : (modelData.kind === "power" ? modelData.command
+                         : (modelData.command === "mute" ? "muted" : "unmuted")))
                 }
               }
 
@@ -713,8 +834,15 @@ Panel {
                     // requested value exactly like a confirmed one would claim a
                     // success nothing had checked.
                     opacity: panel.isPending(control.key, modelData) ? 0.5 : 1.0
-                    onClicked: panel.send(panel.openDeviceId, control.capability, control.command,
-                                          modelData, control.key, control.label.toLowerCase(), false)
+                    onClicked: control.optionIsCommand
+                      // windowShade publishes open/close/pause and each is its
+                      // own call; airConditionerMode publishes values for one
+                      // setter. Both shapes exist in the API.
+                      ? panel.send(panel.openDeviceId, control.capability, modelData,
+                                   undefined, control.key, control.label.toLowerCase(),
+                                   false, modelData)
+                      : panel.send(panel.openDeviceId, control.capability, control.command,
+                                   modelData, control.key, control.label.toLowerCase(), false)
                   }
                 }
               }

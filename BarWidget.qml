@@ -182,10 +182,19 @@ Item {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // A house glyph stands in whenever nothing is on: WidgetButton hides itself
-    // on empty text, and a widget that vanishes when the house is quiet is a
-    // widget you cannot click to check. Opacity carries the state instead.
-    text: root.label !== "" ? root.label : "󰋜"
+    // A house with an antenna -- nf-md-home-automation. Not the SmartThings
+    // mark: that is Samsung's trademark, and the marketplace asks a submitter to
+    // confirm they have rights to the assets they ship. This says the same thing
+    // and belongs to nobody.
+    //
+    // Written as the character rather than an escape on purpose: \u consumes
+    // exactly four hex digits, so "\uf07d0" is U+F07D followed by a literal
+    // zero -- which is precisely what the bar rendered.
+    //
+    // It stands in whenever nothing is on, because WidgetButton hides itself on
+    // empty text and a widget that vanishes when the house is quiet is one you
+    // cannot click to check. Opacity carries the state instead.
+    text: root.label !== "" ? root.label : "󰟐"   // U+F07D0, written literally: \u takes four hex digits
     labelVisible: true
     opacity: root.stale ? 0.5 : (root.label !== "" ? 1.0 : 0.6)
     onPressed: function (b) { if (b === Qt.LeftButton) root.togglePanel() }

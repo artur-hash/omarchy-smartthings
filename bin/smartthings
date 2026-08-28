@@ -263,6 +263,42 @@ shape_status() {
       input:      ($m.mediaInputSource.inputSource.value // null | clampstr),
       channel:    ($m.tvChannel.tvChannel.value // null | clampstr),
 
+      # Locks, doors, shades, valves and sirens: the ordinary furniture of a
+      # smart home. None of them are in the account this was built against,
+      # which is no reason for the next account to go uncontrolled.
+      lock:       ($m.lock.lock.value // null | clampstr),
+      door:       ($m.doorControl.door.value // null | clampstr),
+      garage:     ($m.garageDoorControl.door.value // null | clampstr),
+      shade:      ($m.windowShade.windowShade.value // null | clampstr),
+      shadeLevel: ($m.windowShadeLevel.shadeLevel.value // null),
+      valve:      ($m.valve.valve.value // null | clampstr),
+      alarm:      ($m.alarm.alarm.value // null | clampstr),
+      fanSpeed:   ($m.fanSpeed.fanSpeed.value // null),
+      colorTemp:  ($m.colorTemperature.colorTemperature.value // null),
+      hue:        ($m.colorControl.hue.value // null),
+      saturation: ($m.colorControl.saturation.value // null),
+
+      # A real thermostat, as opposed to the cooling-only setpoint an air
+      # conditioner publishes.
+      thermostatMode:    ($m.thermostatMode.thermostatMode.value // null | clampstr),
+      thermostatFan:     ($m.thermostatFanMode.thermostatFanMode.value // null | clampstr),
+      heatingSetpoint:   ($m.thermostatHeatingSetpoint.heatingSetpoint.value // null),
+      operatingState:    ($m.thermostatOperatingState.thermostatOperatingState.value // null | clampstr),
+
+      # Read-only. A sensor that only reports still deserves a row: knowing a
+      # door is open is the whole point of having put one there.
+      contact:     ($m.contactSensor.contact.value // null | clampstr),
+      motion:      ($m.motionSensor.motion.value // null | clampstr),
+      water:       ($m.waterSensor.water.value // null | clampstr),
+      smoke:       ($m.smokeDetector.smoke.value // null | clampstr),
+      co:          ($m.carbonMonoxideDetector.carbonMonoxide.value // null | clampstr),
+      sound:       ($m.soundSensor.sound.value // null | clampstr),
+      tamper:      ($m.tamperAlert.tamper.value // null | clampstr),
+      acceleration:($m.accelerationSensor.acceleration.value // null | clampstr),
+      power:       ($m.powerMeter.power.value // null),
+      energy:      ($m.energyMeter.energy.value // null),
+      airQuality:  ($m.airQualitySensor.airQuality.value // null),
+
       mode:       ($m.airConditionerMode.airConditionerMode.value // null | clampstr),
       fan:        ($m.airConditionerFanMode.fanMode.value // null | clampstr),
       swing:      ($m.fanOscillationMode.fanOscillationMode.value // null | clampstr),
@@ -287,11 +323,17 @@ shape_status() {
         swing:    ($m.fanOscillationMode.supportedFanOscillationModes.value | clamplist),
         preset:   ($m["custom.airConditionerOptionalMode"].supportedAcOptionalMode.value | clamplist),
         input:    ($m.mediaInputSource.supportedInputSources.value | clamplist),
-        playback: ($m.mediaPlayback.supportedPlaybackCommands.value | clamplist)
+        playback: ($m.mediaPlayback.supportedPlaybackCommands.value | clamplist),
+        shade:    ($m.windowShade.supportedWindowShadeCommands.value | clamplist),
+        thermostatMode: ($m.thermostatMode.supportedThermostatModes.value | clamplist),
+        thermostatFan:  ($m.thermostatFanMode.supportedThermostatFanModes.value | clamplist),
+        alarm:    ($m.alarm.supportedAlarmValues.value | clamplist)
       },
 
       setpointMin: ($m["custom.thermostatSetpointControl"].minimumSetpoint.value // null),
-      setpointMax: ($m["custom.thermostatSetpointControl"].maximumSetpoint.value // null)
+      setpointMax: ($m["custom.thermostatSetpointControl"].maximumSetpoint.value // null),
+      colorTempMin: ($m.colorTemperature.colorTemperatureRange.value.minimum // null),
+      colorTempMax: ($m.colorTemperature.colorTemperatureRange.value.maximum // null)
     }'
 }
 
