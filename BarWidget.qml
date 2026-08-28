@@ -91,7 +91,16 @@ Item {
       var had = root.hasToken
       try { root.hasToken = JSON.parse(String(tokenOut.text)).hasToken === true }
       catch (e) { root.hasToken = false }
-      if (!root.hasToken) { root.devices = []; root.statuses = ({}); return }
+      if (!root.hasToken) {
+        // A missing token is not a failed read. Left counting, the failures from
+        // the moment the old token expired keep the bar dimmed and put "stale"
+        // on the setup screen -- competing with the one screen that already says
+        // exactly what is wrong, and blaming the network for it.
+        root.devices = []
+        root.statuses = ({})
+        root.consecutiveFailures = 0
+        return
+      }
       if (!had || root.devices.length === 0) root.loadInventory()
       else root.refreshStatuses()
     }

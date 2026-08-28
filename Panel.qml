@@ -322,7 +322,9 @@ Panel {
           Text {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            visible: panel.host && panel.host.stale
+            // Never on the setup screen: with no token there is no stale data,
+            // only no data, and the screen behind this already explains it.
+            visible: panel.hasToken && panel.host && panel.host.stale
             text: "stale"
             color: Color.urgent
             font.family: panel.fontFamily
@@ -358,15 +360,17 @@ Panel {
             color: Qt.darker(panel.foreground, 1.3)
             font.family: panel.fontFamily
             font.pixelSize: Style.font.bodySmall
-            text: "1. Open account.smartthings.com/tokens\n"
-                + "2. Generate a new token\n"
-                + "3. Grant the device scopes (list, read, execute) and the\n"
-                + "    location read scope — rooms need it, and without it the\n"
-                + "    devices are simply not grouped\n"
-                + "4. Paste it below\n\n"
-                + "SmartThings expires a personal access token 24 hours after it\n"
-                + "is created, so this needs doing again tomorrow. When it lapses\n"
-                + "the panel returns to this screen."
+            // Line breaks only between the steps. Wrapping inside one is the
+            // Text's job, and hard-wrapping it here fights the panel's width.
+            text: "1.  Open account.smartthings.com/tokens\n"
+                + "2.  Generate a new token\n"
+                + "3.  Grant the device scopes — list, read, execute — and the location "
+                + "read scope. Rooms need that last one; without it the devices simply "
+                + "are not grouped.\n"
+                + "4.  Paste it below\n\n"
+                + "SmartThings expires a personal access token 24 hours after it is "
+                + "created, so this needs doing again tomorrow. When it lapses the "
+                + "panel returns to this screen."
           }
 
           TextField {
