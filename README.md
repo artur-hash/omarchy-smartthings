@@ -53,19 +53,31 @@ Then add the widget to the bar from the shell's own widget settings.
 ## Setup
 
 ```bash
+~/.config/omarchy/plugins/io.github.artur-hash.smartthings/scripts/setup.sh
+```
+
+It checks for node, installs the SmartThings CLI **after asking**, opens a
+browser to log in, and finishes by running this plugin's own `doctor` so you
+know it worked before you go looking at the bar. 
+Omarchy never executes plugin code at install time, which is the right call, so
+nothing here runs on its own — you run this once.
+
+By hand, if you prefer:
+
+```bash
 npm install -g @smartthings/cli
 smartthings locations
 ```
 
-Log in when the browser opens. That is the whole setup: this plugin stores no
+The panel also has a **Log in** button once the CLI is installed, which does the
+same thing as that second command.
+
+Install the CLI **globally**, not through `npx`. This plugin stores no
 credential of its own and never touches the keyring — it reads the session the
 CLI keeps, the way other tools read `gcloud`'s or `gh`'s, and that session
-renews itself.
-
-Install it **globally**, not through `npx`. The plugin only reads the stored
-session; the CLI only renews it when one of its own commands runs. Without
-`smartthings` on `PATH` the session works for a day and then dies, and the
-panel says so rather than leaving you to guess.
+renews itself. But the CLI only renews it when one of its own commands runs, so
+without `smartthings` on `PATH` the session works for a day and then dies. The
+panel and `doctor` both say so rather than leaving you to guess.
 
 ### Why there is no token to paste
 
