@@ -105,7 +105,7 @@ The CLI sidesteps it because its own client installs with no location at all.
 
 Room names need the location read scope, which the CLI session carries.
 Devices are grouped under their room, and when the account holds more than one
-location the location leads the heading — `Casa · hashLabs` — because two
+location the location leads the heading — `Home · Attic` — because two
 places can each have a room by the same name. A device in no room gets its own
 heading rather than sitting silently under the one above it.
 

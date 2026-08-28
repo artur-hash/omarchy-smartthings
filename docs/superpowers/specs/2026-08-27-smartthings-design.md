@@ -19,14 +19,14 @@ design; which one survives is a later decision, not this one.
 ## What the account actually contains
 
 The design is grounded in the real account rather than an imagined house.
-Queried 2026-08-27:
+Queried 2026-08-27, with the names removed:
 
 | Device | Type | Controllable |
 |---|---|---|
-| hashLabs tv | Samsung OCF TV | switch, audioVolume, audioMute, mediaPlayback, mediaTrackControl, mediaInputSource, tvChannel |
-| Ar-condicionado da sala | Samsung OCF AC | the full set the smartac plugin already drives |
-| Light Sensor - hashLabs tv | light sensor | read-only: illuminance (11 lux) |
-| S24+ de Lucas ×2 | mobile | read-only: presence (one `present`, one `not present`) |
+| a television | Samsung OCF TV | switch, audioVolume, audioMute, mediaPlayback, mediaTrackControl, mediaInputSource, tvChannel |
+| an air conditioner | Samsung OCF AC | the full set the smartac plugin already drives |
+| a light sensor, attached to the television | light sensor | read-only: illuminance |
+| a phone, registered twice | mobile | read-only: presence (one `present`, one `not present`) |
 
 Four distinct things, five rows. **A "complete SmartThings client" for this
 account means a TV and an air conditioner, plus three read-only sensors.**
@@ -234,7 +234,7 @@ sentence tomorrow.
    modes your TV publishes. Generality is the point; those belong in a
    Samsung-specific plugin if anywhere.
 6. **The phone appears twice, and I left it that way.** Your account has two
-   registrations of `S24+ de Lucas`, one `present` and one `not present`.
+   registrations of the same phone, one `present` and one `not present`.
    Deduplicating would mean guessing which is real.
 7. **The list screen does not verify reachability for every device.** Health
    is fetched only for a device reporting itself on. The alternative doubles

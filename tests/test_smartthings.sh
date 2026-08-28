@@ -156,8 +156,8 @@ test_missing_location_scope_degrades_quietly() {
 test_location_scope_returns_room_names() {
   setup
   with_token
-  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555","name":"Casa"}]}' > "$TMP/loc.json"
-  printf '{"items":[{"roomId":"r1","name":"Sala"},{"roomId":"r2","name":"Quarto"}]}' > "$TMP/rooms.json"
+  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555","name":"Home"}]}' > "$TMP/loc.json"
+  printf '{"items":[{"roomId":"r1","name":"Attic"},{"roomId":"r2","name":"Quarto"}]}' > "$TMP/rooms.json"
   fake_curl_router '
     case "$url" in
       *"/rooms"*)     route "'"$TMP"'/rooms.json" 200 ;;
@@ -166,8 +166,8 @@ test_location_scope_returns_room_names() {
   out=$("$BIN" rooms 2>&1); rc=$?
   check "a scoped token exits 0" "$rc" "0"
   check "and reports itself scoped" "$(jq -r '.scoped' <<<"$out")" "true"
-  check "with the room named" "$(jq -r '.rooms.r1.name' <<<"$out")" "Sala"
-  check "and its location alongside it" "$(jq -r '.rooms.r1.location' <<<"$out")" "Casa"
+  check "with the room named" "$(jq -r '.rooms.r1.name' <<<"$out")" "Attic"
+  check "and its location alongside it" "$(jq -r '.rooms.r1.location' <<<"$out")" "Home"
   check "and the locations counted" "$(jq -r '.locations' <<<"$out")" "1"
   teardown
 }
@@ -335,9 +335,9 @@ fake_cli_credentials() {
 test_every_location_is_walked() {
   setup
   with_token
-  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555","name":"Casa"},{"locationId":"22222222-3333-4444-5555-666666666666","name":"Escritorio"}]}' > "$TMP/loc.json"
-  printf '{"items":[{"roomId":"rA","name":"Sala"}]}' > "$TMP/r1.json"
-  printf '{"items":[{"roomId":"rB","name":"Diretoria"}]}' > "$TMP/r2.json"
+  printf '{"items":[{"locationId":"11111111-2222-3333-4444-555555555555","name":"Home"},{"locationId":"22222222-3333-4444-5555-666666666666","name":"Office"}]}' > "$TMP/loc.json"
+  printf '{"items":[{"roomId":"rA","name":"Attic"}]}' > "$TMP/r1.json"
+  printf '{"items":[{"roomId":"rB","name":"Boardroom"}]}' > "$TMP/r2.json"
   fake_curl_router '
     case "$url" in
       *"11111111"*"/rooms"*) route "'"$TMP"'/r1.json" 200 ;;
@@ -346,9 +346,9 @@ test_every_location_is_walked() {
     esac'
   out=$("$BIN" rooms 2>&1)
   check "both locations counted" "$(jq -r '.locations' <<<"$out")" "2"
-  check "the first location's room" "$(jq -r '.rooms.rA.name' <<<"$out")" "Sala"
-  check "and the second's" "$(jq -r '.rooms.rB.name' <<<"$out")" "Diretoria"
-  check "each labelled with its own location" "$(jq -r '.rooms.rB.location' <<<"$out")" "Escritorio"
+  check "the first location's room" "$(jq -r '.rooms.rA.name' <<<"$out")" "Attic"
+  check "and the second's" "$(jq -r '.rooms.rB.name' <<<"$out")" "Boardroom"
+  check "each labelled with its own location" "$(jq -r '.rooms.rB.location' <<<"$out")" "Office"
   teardown
 }
 

@@ -48,7 +48,7 @@ test("parseDevices drops a row with no id rather than rendering a ghost", () => 
 
 test("parseRooms carries the scope and the location count through", () => {
   assert.strictEqual(M.parseRooms('{"rooms":{},"locations":0,"scoped":false}').scoped, false);
-  const r = M.parseRooms('{"rooms":{"r1":{"name":"Sala","location":"Casa"}},"locations":2,"scoped":true}');
+  const r = M.parseRooms('{"rooms":{"r1":{"name":"Sala","location":"Home"}},"locations":2,"scoped":true}');
   assert.strictEqual(r.rooms.r1.name, "Sala");
   assert.strictEqual(r.locations, 2);
 });
@@ -315,8 +315,8 @@ test("a healthy battery is not worth a word", () => {
 
 // ------------------------------------------------------------- locations --
 
-const ROOMS = { r1: { name: "hashLabs", location: "Casa" },
-                r2: { name: "Diretoria", location: "Dotnova" } };
+const ROOMS = { r1: { name: "Attic", location: "Home" },
+                r2: { name: "Boardroom", location: "Office" } };
 
 test("locations are counted, with what is on in each", () => {
   const devs = [{ id: "a", label: "a", roomId: "r1", caps: ["switch"] },
@@ -325,7 +325,7 @@ test("locations are counted, with what is on in each", () => {
   const st = { a: statusFor({ switch: "on" }), b: statusFor({ switch: "off" }),
                c: statusFor({ switch: "off" }) };
   const locs = M.locationsOf(devs, ROOMS, true, st);
-  assert.deepStrictEqual(locs.map(l => l.title), ["Casa", "Dotnova"]);
+  assert.deepStrictEqual(locs.map(l => l.title), ["Home", "Office"]);
   assert.strictEqual(locs[0].total, 2);
   assert.strictEqual(locs[0].on, 1);
 });
@@ -342,7 +342,7 @@ test("entering a location shows only its devices", () => {
   const devs = [{ id: "a", label: "a", roomId: "r1", caps: [] },
                 { id: "c", label: "c", roomId: "r2", caps: [] }];
   assert.deepStrictEqual(
-    M.devicesInLocation(devs, ROOMS, true, "Dotnova").map(d => d.id), ["c"]);
+    M.devicesInLocation(devs, ROOMS, true, "Office").map(d => d.id), ["c"]);
 });
 
 // With no location scope every device is unplaced, so there is one location and
