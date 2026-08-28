@@ -51,6 +51,7 @@ Panel {
   // it is off, and a television has no more reason to be honest — so the only
   // confirmation worth trusting is reading the state back.
   property var pending: null        // { deviceId, key, value, label }
+  property string lastWrite: ""     // the device the last command went to
   property int verifyAttempts: 0
 
   // Gaps between confirmation reads, landing at roughly 3, 5, 7 and 11 seconds.
@@ -77,11 +78,13 @@ Panel {
 
   // ---- writing
 
-  function send(device, capability, command, value, key, label, numeric) {
+  function send(device, capability, command, value, key, label, numeric, expect) {
     if (!panel.host || device === "") return
     panel.actionError = ""
     panel.busy = key || capability
-    if (key) panel.pending = { deviceId: device, key: key, value: String(value), label: label || key }
+    panel.lastWrite = device
+    if (key) panel.pending = { deviceId: device, key: key, label: label || key,
+                               value: String(expect !== undefined ? expect : value) }
     var cmd = [panel.bin, "send", "--device", device, "--capability", capability, "--command", command]
     if (value !== undefined && value !== null && value !== "")
       cmd.push(numeric ? "--number" : "--arg", String(value))
@@ -128,7 +131,8 @@ Panel {
         for (var j in s.byId) merged[j] = s.byId[j]
         panel.host.statuses = merged
       }
-      panel.settlePending(s.ok ? s.byId[panel.pending ? panel.pending.deviceId : ""] : null)
+      if (!panel.pending) { panel.lastWrite = ""; return }
+      panel.settlePending(s.ok ? s.byId[panel.pending.deviceId] : null)
     }
   }
 
@@ -137,12 +141,13 @@ Panel {
     interval: 3000
     repeat: false
     onTriggered: {
-      if (!panel.host || !panel.pending) return
+      var target = panel.pending ? panel.pending.deviceId : panel.lastWrite
+      if (!panel.host || target === "") return
       // Come back rather than give up: dropping this tick would strand the
       // pending write with nothing left to settle it.
       if (verifier.running) { verifyTimer.interval = 1000; verifyTimer.restart(); return }
-      panel.verifyAttempts = panel.verifyAttempts + 1
-      verifier.command = [panel.bin, "status", "--device", panel.pending.deviceId]
+      if (panel.pending) panel.verifyAttempts = panel.verifyAttempts + 1
+      verifier.command = [panel.bin, "status", "--device", target]
       verifier.running = true
     }
   }
@@ -483,8 +488,11 @@ Panel {
                     MouseArea {
                       anchors.fill: parent
                       cursorShape: Qt.PointingHandCursor
-                      onClicked: panel.send(parent.parent.modelData.id, "switch",
-                                            parent.parent.isOn ? "off" : "on")
+                      onClicked: {
+                        var want = parent.parent.isOn ? "off" : "on"
+                        panel.send(parent.parent.modelData.id, "switch", want,
+                                   undefined, "switch", "power", false, want)
+                      }
                     }
                   }
 
@@ -605,7 +613,12 @@ Panel {
                 MouseArea {
                   anchors.fill: parent
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: panel.send(panel.openDeviceId, modelData.capability, modelData.command)
+                  onClicked: panel.send(
+                    panel.openDeviceId, modelData.capability, modelData.command, undefined,
+                    modelData.kind === "power" ? "switch" : "mute",
+                    modelData.kind === "power" ? "power" : "mute", false,
+                    modelData.kind === "power" ? modelData.command
+                                               : (modelData.command === "mute" ? "muted" : "unmuted"))
                 }
               }
 
