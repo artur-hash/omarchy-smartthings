@@ -6,7 +6,9 @@
   "author": "artur-hash",
   "license": "MIT",
   "description": "Every device in a SmartThings account from the bar, grouped by room, each showing the controls it actually publishes.",
-  "kinds": ["bar-widget"],
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },

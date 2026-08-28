@@ -52,60 +52,47 @@ Then add the widget to the bar from the shell's own widget settings.
 
 ## Setup
 
-Two ways to give the plugin a credential. It prefers the first.
-
-### The SmartThings CLI — the one that lasts
-
 ```bash
 npm install -g @smartthings/cli
 smartthings locations
 ```
 
-Log in when the browser opens. The CLI holds an OAuth session that renews
-itself, and this plugin reads it — the same arrangement as tools that rely on
-`gcloud auth` or `gh auth login`. Nothing to paste, and nothing expires.
+Log in when the browser opens. That is the whole setup: this plugin stores no
+credential of its own and never touches the keyring — it reads the session the
+CLI keeps, the way other tools read `gcloud`'s or `gh`'s, and that session
+renews itself.
 
-Install it **globally**, not through `npx`: the plugin only reads the stored
-session, and the CLI only renews it when one of its own commands runs. Without
-`smartthings` on `PATH` the session works for a day and then dies like a pasted
-token. `smartthings doctor` says so if that happens.
+Install it **globally**, not through `npx`. The plugin only reads the stored
+session; the CLI only renews it when one of its own commands runs. Without
+`smartthings` on `PATH` the session works for a day and then dies, and the
+panel says so rather than leaving you to guess.
 
-### A personal access token — quick, and gone tomorrow
+### Why there is no token to paste
 
-Create one at
-[account.smartthings.com/tokens](https://account.smartthings.com/tokens) with
-the device scopes (list, read, execute) and the location read scope, and paste
-it into the panel. It is read from stdin, never passed as an argument, and
-stored in the login keyring under service `smartthings`.
+SmartThings expires a personal access token **24 hours after it is created**.
+Tokens issued before 30 December 2024 could last fifty years; new ones cannot.
+A bar widget that asks for a fresh credential every morning is not one anybody
+keeps, so that path was removed rather than offered as a fallback nobody should
+choose.
 
-**SmartThings expires it 24 hours after it is created.** Tokens issued before
-30 December 2024 could last fifty years; new ones cannot. So this is a daily
-chore, and it is a property of the credential rather than of this plugin.
+The other route — having the plugin register its own OAuth app — is closed to a
+whole class of user, and fails in a way that wastes an evening before it
+explains itself. Authorising a third-party app means installing it **into a
+location you own**. If someone else set up the home and shared it with you, you
+own none: the consent screen answers *"at least one location is required"* on
+mobile, and the considerably less helpful *"it looks like you have not set up a
+SmartThings account"* on desktop. Your devices are right there and read and
+control perfectly; only app authorisation is closed.
 
-### If your home was shared with you
-
-The obvious third option — have the plugin register its own OAuth app — does
-not work for everyone, and the way it fails is worth knowing before you spend
-an evening on it.
-
-Authorising a third-party app means installing it **into a location you own**.
-If someone else set up the home and shared it with you, you own none, and the
-consent screen refuses: *"at least one location is required"* on mobile, and
-the considerably less helpful *"it looks like you have not set up a SmartThings
-account"* on desktop. Your devices are right there and read and control
-perfectly; only app authorisation is closed to you.
-
-The CLI route sidesteps this entirely, because its own client installs with no
-location at all. For a shared member it is not the better option — it is the
-only one that lasts.
+The CLI sidesteps it because its own client installs with no location at all.
 
 ### Rooms
 
-Room names live behind the location read scope. Without it everything still
-works and the devices are simply not grouped. With it, devices are grouped
-under their room, and when the account holds more than one location the
-location leads the heading — `Casa · hashLabs` — because two places can each
-have a room by the same name.
+Room names need the location read scope, which the CLI session carries.
+Devices are grouped under their room, and when the account holds more than one
+location the location leads the heading — `Casa · hashLabs` — because two
+places can each have a room by the same name. A device in no room gets its own
+heading rather than sitting silently under the one above it.
 
 ## What the backend trusts
 

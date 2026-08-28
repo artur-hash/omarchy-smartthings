@@ -30,9 +30,9 @@ Item {
   property int roomLocations: 0
   property var statuses: ({})
   property int consecutiveFailures: 0
-  property bool hasToken: false
-  property string tokenSource: "none"   // "cli", "keyring" or "none"
-  readonly property bool lastingCredential: root.tokenSource === "cli"
+  property bool hasToken: false        // a usable CLI session
+  property bool cliInstalled: false
+  property bool renewable: false
 
   readonly property string label: Model.barLabel(root.devices, root.statuses)
   readonly property bool stale: root.consecutiveFailures > 0
@@ -88,15 +88,16 @@ Item {
 
   Process {
     id: tokenCheck
-    command: [root.pluginDir + "bin/smartthings", "token", "status"]
+    command: [root.pluginDir + "bin/smartthings", "credential"]
     stdout: StdioCollector { id: tokenOut; waitForEnd: true }
     onExited: function (exitCode) {
       var had = root.hasToken
       try {
         var st = JSON.parse(String(tokenOut.text))
-        root.hasToken = st.hasToken === true
-        root.tokenSource = String(st.source || "none")
-      } catch (e) { root.hasToken = false; root.tokenSource = "none" }
+        root.hasToken = st.ready === true
+        root.cliInstalled = st.cliInstalled === true
+        root.renewable = st.renewable === true
+      } catch (e) { root.hasToken = false; root.cliInstalled = false; root.renewable = false }
       if (!root.hasToken) {
         // A missing token is not a failed read. Left counting, the failures from
         // the moment the old token expired keep the bar dimmed and put "stale"

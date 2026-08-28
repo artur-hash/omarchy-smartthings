@@ -219,50 +219,13 @@ Panel {
 
   // ---- token
 
-  function saveToken(value) {
-    var v = String(value || "").trim()
-    if (v === "") return
-    panel.actionError = ""
-    // Re-enabled every time: setting stdinEnabled false imperatively does not
-    // reset, which made the whole process one-shot and meant a correct token
-    // pasted after a rejected one needed a shell restart.
-    tokenSet.stdinEnabled = true
-    tokenSet.pendingToken = v
-    tokenSet.running = true
-  }
-
-  Process {
-    id: tokenSet
-    property string pendingToken: ""
-    command: [panel.bin, "token", "set"]
-    stdinEnabled: true
-    stderr: StdioCollector { id: tokenSetErr; waitForEnd: true }
-    onStarted: {
-      // stdin, never argv: a token as an argument lands in /proc/<pid>/cmdline,
-      // readable by every process on this session for the life of the call.
-      write(tokenSet.pendingToken + "\n")
-      stdinEnabled = false
-    }
-    onExited: function (exitCode) {
-      tokenSet.pendingToken = ""
-      if (exitCode !== 0) {
-        var msg = "Could not save the token."
-        try { msg = JSON.parse(String(tokenSetErr.text)).error || msg } catch (e) {}
-        panel.actionError = msg
-        return
-      }
-      panel.actionError = ""
-      if (panel.host) panel.host.refreshAll()
-    }
-  }
-
   KeyboardPanel {
     id: popup
     anchorItem: panel.anchorButton
     owner: panel
     bar: panel.bar
     open: panel.opened
-    focusTarget: panel.hasToken ? keyCatcher : tokenField
+    focusTarget: keyCatcher
     contentWidth: popup.fittedContentWidth(Style.space(340))
     contentHeight: popup.fittedContentHeight(column.implicitHeight, Style.space(760))
 
@@ -349,10 +312,14 @@ Panel {
         }
 
         // ================================================== 1. setup
+        //
+        // No field to paste into: this plugin holds no credential of its own.
+        // It reads the session the SmartThings CLI keeps, the way other tools
+        // read gcloud's or gh's, and that session renews itself.
         Column {
           visible: !panel.hasToken
           width: parent.width
-          spacing: Style.space(8)
+          spacing: Style.space(10)
 
           Text {
             width: parent.width
@@ -361,24 +328,15 @@ Panel {
             color: Qt.darker(panel.foreground, 1.3)
             font.family: panel.fontFamily
             font.pixelSize: Style.font.bodySmall
-            // Line breaks only between the steps. Wrapping inside one is the
-            // Text's job, and hard-wrapping it here fights the panel's width.
-            //
-            // The CLI is listed first because it is the only credential that
-            // lasts, and because for some accounts it is the only one that
-            // works at all -- see the note below, which is not a footnote for
-            // the curious but the explanation a whole class of user needs.
-            text: "The lasting way — the SmartThings CLI holds a session that "
-                + "renews itself, so you do this once:\n\n"
+            text: panel.host && panel.host.cliInstalled
+              ? "The SmartThings CLI is installed but not logged in. Run:\n\n"
+                + "    smartthings locations\n\n"
+                + "and log in when the browser opens."
+              : "This plugin reads the session the SmartThings CLI keeps, so there "
+                + "is nothing to paste and nothing that expires. Run:\n\n"
                 + "    npm install -g @smartthings/cli\n"
                 + "    smartthings locations\n\n"
-                + "Log in when the browser opens. This panel picks the session up "
-                + "on its own.\n\n"
-                + "The quick way — paste a personal access token from "
-                + "account.smartthings.com/tokens, granting the device scopes "
-                + "(list, read, execute) and the location read scope. SmartThings "
-                + "expires it 24 hours after it is created, so it has to be done "
-                + "again tomorrow."
+                + "and log in when the browser opens."
           }
 
           Text {
@@ -388,27 +346,15 @@ Panel {
             color: Qt.darker(panel.foreground, 1.7)
             font.family: panel.fontFamily
             font.pixelSize: Style.font.caption
-            text: "If your home was set up by someone else and shared with you, the "
-                + "CLI is the only route: authorising an app requires installing it "
-                + "into a location you own, and a shared member owns none. Your "
-                + "devices still read and control normally."
-          }
-
-          TextField {
-            id: tokenField
-            width: parent.width
-            placeholderText: "Personal access token"
-            password: true
-            foreground: panel.foreground
-            font.family: panel.fontFamily
-            onAccepted: { panel.saveToken(text); text = "" }
+            text: "A personal access token would be quicker, and SmartThings expires "
+                + "one 24 hours after it is created, so it is not offered here."
           }
 
           Button {
-            text: "Save token"
+            text: "Check again"
             foreground: panel.foreground
             fontFamily: panel.fontFamily
-            onClicked: { panel.saveToken(tokenField.text); tokenField.text = "" }
+            onClicked: if (panel.host) panel.host.refreshAll()
           }
         }
 
@@ -418,16 +364,16 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          // Said once, quietly, on the screen the user actually lives on. A
-          // pasted token works perfectly until tomorrow morning, and finding
-          // that out then is worse than reading it now.
+          // A session that cannot renew works for a day and then dies like the
+          // token this plugin stopped offering, and the reason is invisible.
           Text {
-            visible: panel.host && panel.host.tokenSource === "keyring"
+            visible: panel.host && panel.host.hasToken && !panel.host.renewable
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: "This token expires 24 hours after you created it."
-            color: Qt.darker(panel.foreground, 1.6)
+            text: "The CLI session cannot renew itself: \"smartthings\" is not on PATH. "
+                + "Install it globally with npm install -g @smartthings/cli."
+            color: Color.urgent
             font.family: panel.fontFamily
             font.pixelSize: Style.font.caption
           }
@@ -740,22 +686,6 @@ Panel {
           }
         }
 
-        // Reachable from every screen once a token exists.
-        Button {
-          visible: panel.hasToken && panel.openDeviceId === ""
-          text: "Replace token"
-          foreground: panel.foreground
-          fontFamily: panel.fontFamily
-          onClicked: {
-            clearToken.running = true
-          }
-        }
-
-        Process {
-          id: clearToken
-          command: [panel.bin, "token", "clear"]
-          onExited: if (panel.host) panel.host.refreshAll()
-        }
       }
     }
   }

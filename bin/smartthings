@@ -7,7 +7,6 @@
 set -uo pipefail
 
 API="https://api.smartthings.com/v1"
-SECRET_SERVICE="smartthings"
 
 # Ceilings on anything the far end controls. A real payload is kilobytes and a
 # real account has a handful of devices, so these are generous by orders of
@@ -33,27 +32,21 @@ JQ_CLAMP='
 '
 jq_shape() { jq --argjson MAXSTR "$MAX_STRING" --argjson MAXLIST "$MAX_LIST" "$@"; }
 
-# ------------------------------------------------------------------- token --
+# ------------------------------------------------------------- credential --
 #
-# Two sources, and which one is in use matters enough that the rest of the file
-# asks. A personal access token is what anyone can make in a minute, and
-# SmartThings expires it 24 hours later. The SmartThings CLI holds an OAuth
-# token that renews itself, which is the only credential here that lasts.
+# One source: the session the SmartThings CLI holds. This plugin stores no
+# credential of its own and never touches the keyring.
 #
-# The CLI is not merely the nicer option: it is the only one available to a
-# whole class of user. Authorising a third-party app requires installing it
-# into a location you own, so anyone whose home was set up by someone else and
-# shared with them cannot complete that flow at all -- the consent screen tells
-# them "at least one location is required" while their devices sit right there,
-# readable and controllable. Their PAT works; app authorisation never will. The
-# CLI sidesteps it because its own client installs with no location.
-
-# read_token prints two lines -- source, then token -- rather than setting a
-# global. A global would be written inside the subshell that $( ) creates and
-# never reach the caller, which is exactly how doctor came to report a CLI
-# session as a pasted token, and how the 401 branch would have cleared the
-# keyring over a credential the CLI owns.
-TOKEN_SOURCE=""
+# The alternative, a personal access token, was removed rather than kept as a
+# fallback. SmartThings expires one 24 hours after it is created, which makes a
+# bar widget ask for a new credential every morning -- and a fallback nobody
+# should choose is a second setup screen, a second failure mode and a second
+# thing to explain, bought for a path that does not work.
+#
+# Registering an OAuth app is the other route, and it is closed to a whole
+# class of user: authorising one means installing it into a location you own,
+# so anyone whose home was set up by someone else and shared with them cannot
+# complete it. The CLI's own client installs with no location and sidesteps it.
 
 cli_credentials_file() {
   local f
@@ -65,16 +58,17 @@ cli_credentials_file() {
 }
 
 # The CLI refreshes an hour before expiry, so any command it runs inside that
-# window renews the token. Rather than rotate the pair ourselves -- writing
-# another tool's credential file, and owning the failure mode where a spent
-# refresh token is never replaced -- we let it do its own job and simply ask.
+# window renews the session. Rather than rotate the pair here -- writing another
+# tool's credential file, and owning the failure where a spent refresh token is
+# never replaced -- we let it do its own job and simply ask.
 cli_refresh() {
   command -v smartthings >/dev/null 2>&1 || return 1
   smartthings locations --json >/dev/null 2>&1
 }
 
-cli_token() {
-  local f entry exp token
+TOKEN_VALUE=""
+resolve_token() {
+  local f entry exp exp_s now_s
   f=$(cli_credentials_file) || return 1
   entry=$(jq -c 'to_entries | map(select(.value.accessToken | type == "string")) | .[0] // empty' "$f" 2>/dev/null)
   [[ -n $entry ]] || return 1
@@ -83,7 +77,6 @@ cli_token() {
   # actually renews rather than handing back the same nearly-dead token.
   exp=$(jq -r '.value.expires // empty' <<<"$entry")
   if [[ -n $exp ]]; then
-    local exp_s now_s
     exp_s=$(date -d "$exp" +%s 2>/dev/null) || exp_s=0
     now_s=$(date +%s)
     if (( exp_s > 0 && exp_s - now_s < 1800 )); then
@@ -93,72 +86,19 @@ cli_token() {
     fi
   fi
 
-  token=$(jq -r '.value.accessToken' <<<"$entry")
-  [[ -n $token && $token != null ]] || return 1
-  printf '%s' "$token"
+  TOKEN_VALUE=$(jq -r '.value.accessToken' <<<"$entry")
+  [[ -n $TOKEN_VALUE && $TOKEN_VALUE != null ]] || return 1
 }
 
-read_token() {
-  local t
-  if t=$(cli_token); then printf 'cli\n%s' "$t"; return 0; fi
-  need secret-tool
-  t=$(secret-tool lookup service "$SECRET_SERVICE" key token 2>/dev/null) || return 1
-  [[ -n $t ]] || return 1
-  printf 'keyring\n%s' "$t"
-}
-
-# Fills TOKEN_SOURCE and TOKEN_VALUE. It returns nothing on stdout on purpose:
-# a caller writing `t=$(resolve_token)` would run it in a subshell and lose the
-# source again, which is the same mistake twice. Call it bare -- `resolve_token
-# || die ...` -- and read the two variables.
-TOKEN_VALUE=""
-resolve_token() {
-  local creds
-  creds=$(read_token) || return 1
-  TOKEN_SOURCE="${creds%%$'\n'*}"
-  TOKEN_VALUE="${creds#*$'\n'}"
-}
-
-cmd_token() {
-  local action="${1:-}"
-  case "$action" in
-    set)
-      need secret-tool
-      # stdin only. As an argument the token would land in /proc/<pid>/cmdline,
-      # readable by every process on this session for the life of the call.
-      (( $# > 1 )) && die "the token is read from stdin, not from an argument" 2
-      local raw
-      raw=$(cat)
-      raw="${raw%$'\n'}"
-      [[ -n $raw ]] || die "no token on stdin" 2
-      # A pasted token routinely carries stray whitespace; anything else is not
-      # a token. Control characters in particular would break curl's -K config
-      # format, and curl echoes the offending line back on stderr.
-      [[ $raw =~ ^[A-Za-z0-9._~+/=-]+$ ]] \
-        || die "that does not look like a personal access token" 2
-      printf '%s' "$raw" | secret-tool store --label="SmartThings token" \
-        service "$SECRET_SERVICE" key token \
-        || die "could not write to the keyring" 5
-      printf '{"ok":true}\n'
-      ;;
-    clear)
-      # Only ever the keyring's own copy. The CLI's credential belongs to the
-      # CLI, and deleting it from here would log the user out of a tool they
-      # did not ask this plugin to touch.
-      need secret-tool
-      secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
-      printf '{"ok":true}\n'
-      ;;
-    status)
-      if resolve_token; then
-        printf '{"hasToken":true,"source":"%s","lasting":%s}\n' \
-          "$TOKEN_SOURCE" "$([[ $TOKEN_SOURCE == cli ]] && echo true || echo false)"
-      else
-        printf '{"hasToken":false,"source":"none","lasting":false}\n'
-      fi
-      ;;
-    *) die "usage: smartthings token set|clear|status" 2 ;;
-  esac
+# The panel needs to tell three states apart: ready, the CLI is missing, and the
+# CLI is there but nobody has logged in. Each has a different next step.
+cmd_credential() {
+  local installed=false session=false renewable=false
+  command -v smartthings >/dev/null 2>&1 && installed=true
+  resolve_token 2>/dev/null && session=true
+  [[ $installed == true && $session == true ]] && renewable=true
+  printf '{"ready":%s,"cliInstalled":%s,"session":%s,"renewable":%s}\n' \
+    "$session" "$installed" "$session" "$renewable"
 }
 
 # --------------------------------------------------------------------- http --
@@ -169,7 +109,7 @@ api() {
   need curl
   local method="$1" path="$2" body="${3:-}" token raw status out token_escaped curl_rc
 
-  resolve_token || die "no credential: log in with the SmartThings CLI, or store a token" 2
+  resolve_token || die "no SmartThings CLI session; run: smartthings locations" 2
   token="$TOKEN_VALUE"
   token_escaped="${token//\\/\\\\}"
   token_escaped="${token_escaped//\"/\\\"}"
@@ -212,18 +152,15 @@ api() {
 
   case "$status" in
     2*)  printf '%s' "$out" ;;
-    401) if [[ $TOKEN_SOURCE == cli ]]; then
-           # The CLI owns this credential; clearing the keyring would delete an
-           # unrelated one. One refresh, one retry, then give up rather than
-           # loop against a dead authorisation.
-           if [[ ${ST_RETRIED:-0} == 0 ]] && cli_refresh; then
-             ST_RETRIED=1 api "$method" "$path" "$body"
-             return $?
-           fi
-           die "the SmartThings CLI session was rejected; run: smartthings locations" 3
+    401) # One refresh, one retry, then stop rather than loop against a dead
+         # authorisation. Nothing is deleted here: the session belongs to the
+         # CLI, and logging the user out of a tool this plugin merely reads
+         # would be a side effect nobody asked for.
+         if [[ ${ST_RETRIED:-0} == 0 ]] && cli_refresh; then
+           ST_RETRIED=1 api "$method" "$path" "$body"
+           return $?
          fi
-         secret-tool clear service "$SECRET_SERVICE" key token 2>/dev/null
-         die "the token was rejected — SmartThings expires one 24 hours after it is created; generate another" 3 ;;
+         die "the SmartThings CLI session was rejected; run: smartthings locations" 3 ;;
     403) [[ ${SOFT:-0} == 1 ]] && return 11
          die "the token lacks permission for $path" 12 ;;
     429) die "rate limited by SmartThings" 7 ;;
@@ -412,33 +349,29 @@ cmd_send() {
 cmd_doctor() {
   local c t devices_json n rooms_json
   printf 'SmartThings doctor\n\n'
-  for c in curl jq secret-tool; do
+  for c in curl jq; do
     command -v "$c" >/dev/null 2>&1 \
       && printf '  ok    %s\n' "$c" || printf '  FAIL  %s is missing\n' "$c"
   done
 
-  if resolve_token && t="$TOKEN_VALUE"; then
-    # A redacted prefix, enough to tell two tokens apart and not enough to use.
-    if [[ $TOKEN_SOURCE == cli ]]; then
-      if command -v smartthings >/dev/null 2>&1; then
-        printf '  ok    SmartThings CLI session (%s...) — renews itself\n' "${t:0:4}"
-      else
-        # The stored token is real but nothing can renew it: the CLI refreshes
-        # only when one of its own commands runs, and there is no smartthings on
-        # PATH to run. This would otherwise look healthy for a day and then
-        # fail like a plain PAT, with no hint why.
-        printf '  --    CLI session found (%s...) but "smartthings" is not on PATH\n' "${t:0:4}"
-        printf '        it cannot renew and will expire; install it globally:\n'
-        printf '        npm install -g @smartthings/cli\n'
-      fi
+  if resolve_token; then
+    t="$TOKEN_VALUE"
+    if command -v smartthings >/dev/null 2>&1; then
+      printf '  ok    SmartThings CLI session (%s...) — renews itself\n' "${t:0:4}"
     else
-      printf '  ok    personal access token (%s...) — expires 24h after it was created\n' "${t:0:4}"
-      command -v smartthings >/dev/null 2>&1 \
-        && printf '  --    the CLI is installed but not logged in: run "smartthings locations"\n' \
-        || printf '  --    for a credential that lasts, install the SmartThings CLI and log in\n'
+      # The stored session is real but nothing can renew it: the CLI refreshes
+      # only when one of its own commands runs, and there is none on PATH. This
+      # would otherwise look healthy for a day and then fail with no hint why.
+      printf '  --    CLI session found (%s...) but "smartthings" is not on PATH\n' "${t:0:4}"
+      printf '        it cannot renew and will expire; install it globally:\n'
+      printf '        npm install -g @smartthings/cli\n'
     fi
   else
-    printf '  FAIL  no credential: log in with the SmartThings CLI, or paste a token\n'; return 1
+    printf '  FAIL  no SmartThings CLI session\n'
+    command -v smartthings >/dev/null 2>&1 \
+      && printf '        run: smartthings locations\n' \
+      || printf '        run: npm install -g @smartthings/cli && smartthings locations\n'
+    return 1
   fi
 
   devices_json=$(cmd_devices) || return 1
@@ -460,11 +393,11 @@ cmd_doctor() {
 # --------------------------------------------------------------------- main --
 
 case "${1:-}" in
-  token)   shift; cmd_token "$@" ;;
+  credential) shift; cmd_credential "$@" ;;
   devices) shift; cmd_devices "$@" ;;
   rooms)   shift; cmd_rooms "$@" ;;
   status)  shift; cmd_status "$@" ;;
   send)    shift; cmd_send "$@" ;;
   doctor)  shift; cmd_doctor "$@" ;;
-  *) die "usage: smartthings token|devices|rooms|status|send|doctor" 2 ;;
+  *) die "usage: smartthings credential|devices|rooms|status|send|doctor" 2 ;;
 esac

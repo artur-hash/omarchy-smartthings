@@ -14,7 +14,10 @@ setup() {
   # ahead of the keyring and quietly change what half these tests exercise.
   export XDG_DATA_HOME="$TMP/share"
   export XDG_CONFIG_HOME="$TMP/config"
-  export PATH="$TMP/bin:$PATH"
+  # A minimal PATH, not the caller's. With the real one inherited, whether a
+  # test passes depends on what the developer happens to have installed -- and
+  # "smartthings is not on PATH" is a state these tests must be able to create.
+  export PATH="$TMP/bin:/usr/bin:/bin"
   mkdir -p "$TMP/bin"
   # Mirrors real libsecret: reads all of stdin, then strips exactly one trailing
   # newline. Not `cat > file`, which strips none and would let a token with an
@@ -68,58 +71,17 @@ FAKE
   chmod +x "$TMP/bin/curl"
 }
 
-with_token() { printf 'tok-abc' | "$BIN" token set >/dev/null 2>&1; }
+# A CLI session, which is the only credential this backend accepts.
+with_token() { fake_cli_credentials "2099-01-01T00:00:00.000Z" "cli-token-xyz"; }
 
 # ------------------------------------------------------------------- token --
 
-test_token_comes_from_stdin_only() {
-  setup
-  out=$(printf 'secret-value' | "$BIN" token set 2>&1); rc=$?
-  check "a token on stdin is accepted" "$rc" "0"
-  check "and stored verbatim" "$(cat "$SECRET_STORE")" "secret-value"
 
-  out=$("$BIN" token set secret-value 2>&1); rc=$?
-  check "a token as an argument is refused" "$rc" "2"
-  grep -q 'stdin' <<<"$out" && ok "and the refusal says why" || bad "and the refusal says why" "$out"
-  teardown
-}
 
-test_token_rejects_control_characters() {
-  setup
-  # printf, not $(...): command substitution strips the newline and the test
-  # would silently pass on a string that never contained one.
-  out=$(printf 'abc\ndef' | "$BIN" token set 2>&1); rc=$?
-  check "an embedded newline is refused" "$rc" "2"
-  [[ -f $SECRET_STORE ]] && bad "nothing is stored on refusal" "store exists" \
-                          || ok "nothing is stored on refusal"
-  teardown
-}
-
-test_token_status_and_clear() {
-  setup
-  check "no token reports hasToken false" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
-  with_token
-  check "a stored token reports hasToken true" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "true"
-  "$BIN" token clear >/dev/null
-  check "clearing removes it" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
-  teardown
-}
 
 # The single most important property in this backend: the token must never
 # reach argv, where /proc/<pid>/cmdline exposes it to every process on the
 # session for the life of the call.
-test_token_never_reaches_curl_argv() {
-  setup
-  with_token
-  printf '{"items":[]}' > "$TMP/empty.json"
-  fake_curl 200 "$TMP/empty.json"
-  "$BIN" devices >/dev/null 2>&1
-  grep -q 'tok-abc' "$TMP/curl.args" && bad "the token is absent from curl's arguments" \
-    "$(cat "$TMP/curl.args")" || ok "the token is absent from curl's arguments"
-  grep -q 'tok-abc' "$TMP/curl.stdin" && ok "it arrives on stdin instead" \
-    || bad "it arrives on stdin instead" "$(cat "$TMP/curl.stdin")"
-  teardown
-}
 
 # -------------------------------------------------------------- http bounds --
 
@@ -162,16 +124,6 @@ test_remote_strings_and_lists_are_clamped() {
   teardown
 }
 
-test_401_clears_the_token() {
-  setup
-  with_token
-  printf '{"error":"nope"}' > "$TMP/e.json"
-  fake_curl 401 "$TMP/e.json"
-  out=$("$BIN" devices 2>&1); rc=$?
-  check "a rejected token exits 3" "$rc" "3"
-  check "and is removed from the keyring" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
-  teardown
-}
 
 test_429_is_named_as_rate_limiting() {
   setup
@@ -352,12 +304,6 @@ test_absent_results_array_is_still_success() {
   teardown
 }
 
-test_no_token_is_its_own_exit_code() {
-  setup
-  out=$("$BIN" devices 2>&1); rc=$?
-  check "no token exits 2" "$rc" "2"
-  teardown
-}
 
 # Two credential sources. The CLI's OAuth session renews itself and is the only
 # one that lasts; a personal access token is what anyone can make in a minute
@@ -372,67 +318,16 @@ fake_cli_credentials() {
     > "$XDG_DATA_HOME/@smartthings/cli/credentials.json"
 }
 
-test_cli_session_is_preferred_over_a_pasted_token() {
-  setup
-  with_token
-  fake_cli_credentials "2099-01-01T00:00:00.000Z"
-  out=$("$BIN" token status)
-  check "the CLI session wins" "$(jq -r .source <<<"$out")" "cli"
-  check "and is reported as lasting" "$(jq -r .lasting <<<"$out")" "true"
-  teardown
-}
 
-test_a_pasted_token_is_used_when_there_is_no_cli_session() {
-  setup
-  with_token
-  export XDG_DATA_HOME="$TMP/empty"
-  out=$("$BIN" token status)
-  check "the keyring is the fallback" "$(jq -r .source <<<"$out")" "keyring"
-  check "and is not lasting" "$(jq -r .lasting <<<"$out")" "false"
-  teardown
-}
 
 # The source has to survive the call. Written as a global set inside $( ), it is
 # assigned in a subshell and never reaches the caller -- which reported a CLI
 # session as a pasted token, and would have let a 401 delete a keyring entry
 # over a credential the CLI owns.
-test_the_credential_source_survives_the_call() {
-  setup
-  with_token
-  fake_cli_credentials "2099-01-01T00:00:00.000Z"
-  printf '{"items":[]}' > "$TMP/e.json"
-  fake_curl 200 "$TMP/e.json"
-  "$BIN" devices >/dev/null 2>&1
-  grep -q 'cli-token-xyz' "$TMP/curl.stdin" && ok "the CLI token is the one actually sent" \
-    || bad "the CLI token is the one actually sent" "$(cat "$TMP/curl.stdin")"
-  teardown
-}
 
 # A 401 on the CLI's credential must not delete the keyring's, which belongs to
 # a different mechanism the user may still be relying on.
-test_a_rejected_cli_session_leaves_the_keyring_alone() {
-  setup
-  with_token
-  fake_cli_credentials "2099-01-01T00:00:00.000Z"
-  printf '{}' > "$TMP/e.json"
-  fake_curl 401 "$TMP/e.json"
-  "$BIN" devices >/dev/null 2>&1
-  export XDG_DATA_HOME="$TMP/empty"
-  check "the pasted token is still there" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "true"
-  teardown
-}
 
-test_a_rejected_pasted_token_is_cleared() {
-  setup
-  with_token
-  export XDG_DATA_HOME="$TMP/empty"
-  printf '{}' > "$TMP/e.json"
-  fake_curl 401 "$TMP/e.json"
-  out=$("$BIN" devices 2>&1); rc=$?
-  check "a rejected pasted token exits 3" "$rc" "3"
-  check "and is removed" "$(jq -r .hasToken <<<"$("$BIN" token status)")" "false"
-  teardown
-}
 
 # Reading only .items[0] left every device in every other location permanently
 # ungrouped -- an air conditioner in a second location looked like it belonged
@@ -457,14 +352,9 @@ test_every_location_is_walked() {
   teardown
 }
 
-test_token_comes_from_stdin_only
-test_token_rejects_control_characters
-test_token_status_and_clear
-test_token_never_reaches_curl_argv
 test_oversized_response_is_refused
 test_ordinary_response_is_untouched
 test_remote_strings_and_lists_are_clamped
-test_401_clears_the_token
 test_429_is_named_as_rate_limiting
 test_missing_location_scope_degrades_quietly
 test_location_scope_returns_room_names
@@ -477,12 +367,75 @@ test_send_builds_the_command_body
 test_send_distinguishes_numbers_from_strings
 test_a_refused_command_is_not_reported_as_success
 test_absent_results_array_is_still_success
-test_no_token_is_its_own_exit_code
-test_cli_session_is_preferred_over_a_pasted_token
-test_a_pasted_token_is_used_when_there_is_no_cli_session
-test_the_credential_source_survives_the_call
-test_a_rejected_cli_session_leaves_the_keyring_alone
-test_a_rejected_pasted_token_is_cleared
+
+# ------------------------------------------------------------- credential --
+
+test_no_session_is_its_own_exit_code() {
+  setup
+  out=$("$BIN" devices 2>&1); rc=$?
+  check "no CLI session exits 2" "$rc" "2"
+  grep -q 'smartthings locations' <<<"$out" && ok "and says what to run" \
+    || bad "and says what to run" "$out"
+  teardown
+}
+
+test_the_cli_session_is_the_token_sent() {
+  setup
+  with_token
+  printf '{"items":[]}' > "$TMP/e.json"
+  fake_curl 200 "$TMP/e.json"
+  "$BIN" devices >/dev/null 2>&1
+  grep -q 'cli-token-xyz' "$TMP/curl.stdin" && ok "the CLI session is what goes on the wire" \
+    || bad "the CLI session is what goes on the wire" "$(cat "$TMP/curl.stdin")"
+  grep -q 'cli-token-xyz' "$TMP/curl.args" && bad "and never reaches argv" \
+    "$(cat "$TMP/curl.args")" || ok "and never reaches argv"
+  teardown
+}
+
+# The panel tells three states apart and each has a different next step, so the
+# backend reports them separately rather than as one boolean.
+test_credential_reports_what_is_missing() {
+  setup
+  out=$("$BIN" credential)
+  check "nothing at all: not ready" "$(jq -r .ready <<<"$out")" "false"
+  check "and no session"            "$(jq -r .session <<<"$out")" "false"
+  with_token
+  out=$("$BIN" credential)
+  check "with a session: ready" "$(jq -r .ready <<<"$out")" "true"
+  # No smartthings on PATH inside the test sandbox, so it cannot renew.
+  check "but not renewable without the binary" "$(jq -r .renewable <<<"$out")" "false"
+
+  # With the CLI present it can renew, which is the difference between a
+  # credential that lasts and one that quietly dies after a day.
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/smartthings"; chmod +x "$TMP/bin/smartthings"
+  out=$("$BIN" credential)
+  check "with the binary too: renewable" "$(jq -r .renewable <<<"$out")" "true"
+  check "and the CLI is reported installed" "$(jq -r .cliInstalled <<<"$out")" "true"
+  teardown
+}
+
+# A rejected session must not delete anything: it belongs to the CLI, and
+# logging the user out of a tool this plugin merely reads is a side effect
+# nobody asked for.
+test_a_rejected_session_is_reported_not_deleted() {
+  setup
+  with_token
+  printf '{}' > "$TMP/e.json"
+  fake_curl 401 "$TMP/e.json"
+  out=$("$BIN" devices 2>&1); rc=$?
+  check "a rejected session exits 3" "$rc" "3"
+  grep -q 'smartthings locations' <<<"$out" && ok "and says how to fix it" \
+    || bad "and says how to fix it" "$out"
+  check "the credentials file is untouched" \
+    "$(jq -r '.["default:api.smartthings.com"].accessToken' "$XDG_DATA_HOME/@smartthings/cli/credentials.json")" \
+    "cli-token-xyz"
+  teardown
+}
+
+test_no_session_is_its_own_exit_code
+test_the_cli_session_is_the_token_sent
+test_credential_reports_what_is_missing
+test_a_rejected_session_is_reported_not_deleted
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
