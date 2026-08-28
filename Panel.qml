@@ -493,9 +493,10 @@ Panel {
                 Text {
                   width: parent.width
                   // What a glance is asking: is anything running in there.
-                  text: modelData.on > 0
-                    ? modelData.total + " devices · " + modelData.on + " on"
-                    : modelData.total + " devices"
+                  text: {
+                    var n = modelData.total + (modelData.total === 1 ? " device" : " devices")
+                    return modelData.on > 0 ? n + " · " + modelData.on + " on" : n
+                  }
                   textFormat: Text.PlainText
                   color: Qt.darker(panel.foreground, 1.5)
                   font.family: panel.fontFamily
